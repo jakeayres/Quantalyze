@@ -1,6 +1,23 @@
 import pandas as pd
 from scipy.optimize import curve_fit
 
+
+class Fit:
+    
+    def __init__(self, func, popt, pcov):
+        self.func = func
+        self.popt = popt
+        self.pcov = pcov
+
+
+    def evaluate(self, x):
+        pass
+
+
+    def plot(self, ax, x, **kwargs):
+        pass
+
+
 def fit(func, df, x_column, y_column, x_min=None, x_max=None):
     """
     Fits a given function to data in a DataFrame within an optional x range.
