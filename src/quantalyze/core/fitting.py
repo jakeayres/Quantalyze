@@ -1,4 +1,3 @@
-import pandas as pd
 from scipy.optimize import curve_fit
 
 
@@ -11,11 +10,33 @@ class Fit:
 
 
     def evaluate(self, x):
-        pass
+        """
+        Evaluate the fitted function at given data points.
+
+        Parameters:
+        x : array-like
+            The input data points where the function should be evaluated.
+
+        Returns:
+        array-like
+            The evaluated values of the fitted function at the given data points.
+        """
+        return self.func(x, *self.popt)
 
 
     def plot(self, ax, x, **kwargs):
-        pass
+        """
+        Plot the evaluated function on the given axes.
+
+        Parameters:
+        ax (matplotlib.axes.Axes): The axes on which to plot.
+        x (array-like): The x values to evaluate the function.
+        **kwargs: Additional keyword arguments to pass to the plot function.
+
+        Returns:
+        None
+        """
+        ax.plot(x, self.evaluate(x), **kwargs)
 
 
 def fit(func, df, x_column, y_column, x_min=None, x_max=None):
@@ -43,20 +64,11 @@ def fit(func, df, x_column, y_column, x_min=None, x_max=None):
     x_data = df[x_column].values
     y_data = df[y_column].values
     
+    # Check if there is data to fit
+    if len(x_data) == 0 or len(y_data) == 0:
+        raise RuntimeError("No data in the specified x range to fit.")
+    
     # Perform curve fitting
     popt, pcov = curve_fit(func, x_data, y_data)
     
-    return popt, pcov
-
-
-def evaluate(func, popt, x):
-    """
-    Evaluates the fitted function with the optimal parameters at given x values.
-    Parameters:
-    func (callable): The function to evaluate. It should take x data as the first argument and parameters to fit as subsequent arguments.
-    popt (array): Optimal values for the parameters obtained from the fitting.
-    x (array-like): The x values at which to evaluate the function.
-    Returns:
-    array: The y values of the function evaluated at the given x values.
-    """
-    return func(x, *popt)
+    return Fit(func=func, popt=popt, pcov=pcov)
