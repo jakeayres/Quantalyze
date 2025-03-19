@@ -6,27 +6,34 @@ from scipy.signal import savgol_filter as scipy_savgol_filter
 
 
 
-def bin(df, x_column, minimum, maximum, width):
+def bin(dfs, x_column, minimum, maximum, width):
     """
-    Bin the data in the specified column of the DataFrame into equal-width bins and compute the mean of each bin.
+    Bin the data in the specified column of the DataFrame(s) into equal-width bins and compute the mean of each bin.
 
     Parameters:
-    df (pandas.DataFrame): The input DataFrame containing the data to be binned.
-    x_column (str): The name of the column in the DataFrame to be binned.
+    dfs (pandas.DataFrame or list of pandas.DataFrame): The input DataFrame(s) containing the data to be binned.
+    x_column (str): The name of the column in the DataFrame(s) to be binned.
     minimum (float): The minimum value of the range to be binned.
     maximum (float): The maximum value of the range to be binned.
     width (float): The width of each bin.
 
-    Returns:    
+    Returns:
     pandas.DataFrame: A DataFrame containing the mean values of each bin, with the bin midpoints as the values in the specified column.
     """
-    bin_edges = np.arange(minimum-width/2, maximum + width/2 + width, width)
-    bin_midpoints = (bin_edges[1:] + bin_edges[:-1]) / 2
-    df['bin'] = pd.cut(df[x_column], bins=bin_edges, include_lowest=True)
-    binned = df.groupby('bin').agg('mean').reset_index()
-    binned[x_column] = bin_midpoints
-    binned = binned.drop('bin', axis=1)
-    return binned
+    def bin_single_df(df):
+        bin_edges = np.arange(minimum - width / 2, maximum + width / 2 + width, width)
+        bin_midpoints = (bin_edges[1:] + bin_edges[:-1]) / 2
+        df['bin'] = pd.cut(df[x_column], bins=bin_edges, include_lowest=True)
+        binned = df.groupby('bin').agg('mean').reset_index()
+        binned[x_column] = bin_midpoints
+        binned = binned.drop('bin', axis=1)
+        return binned
+
+    if isinstance(dfs, list):
+        combined_df = pd.concat(dfs, ignore_index=True)
+        return bin_single_df(combined_df)
+    else:
+        return bin_single_df(dfs)
 
 
 
