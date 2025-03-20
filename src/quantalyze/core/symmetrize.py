@@ -25,6 +25,7 @@ def symmetrize(dfs, x_column, y_column, minimum, maximum, step):
     combined = bin(combined, x_column, -maximum, maximum, step)
     new_df = pd.DataFrame(data={x_column: combined[x_column], 'a': combined[y_column], 'b': combined[y_column].values[::-1]})
     new_df[y_column] = (new_df["a"]+new_df["b"])/2
+    new_df = new_df.drop(columns=['a', 'b'])
     return new_df
 
 
@@ -49,4 +50,5 @@ def antisymmetrize(dfs, x_column, y_column, minimum, maximum, step):
     combined = bin(combined, x_column, -maximum, maximum, step)
     new_df = pd.DataFrame(data={x_column: combined[x_column], 'a': combined[y_column], 'b': combined[y_column].values[::-1]})
     new_df[y_column] = (new_df["a"]-new_df["b"])/2
+    new_df = new_df.drop(columns=['a', 'b'])
     return new_df
