@@ -12,16 +12,18 @@ st.set_page_config(page_title='Transport GUI', page_icon=None, layout="wide", in
 
 
 def fetch_files():
-
     st.header('Select data files')
-    uploaded_files = st.file_uploader(
-        "Choose a CSV file", 
-        accept_multiple_files=True,
-    )
+    uploaded_files = st.file_uploader("Choose a CSV file", accept_multiple_files=True)
 
     if uploaded_files:
-        dfs = [pd.read_csv(file) for file in uploaded_files]
-        return dfs
+        if st.button('Load files'):
+            st.session_state['dfs'] = [pd.read_csv(file) for file in uploaded_files]
+            for file in uploaded_files:
+                st.toast(f'{file.name} loaded')
+
+
+    if st.session_state.get('dfs'):
+        return st.session_state['dfs']
     else:
         st.info('Upload files')
         raise Exception('No files uploaded')
