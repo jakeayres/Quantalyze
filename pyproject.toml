@@ -13,5 +13,12 @@ dependencies = [
     "streamlit>=1.43.2",
 ]
 
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.uv]
+package-dir = "src/quantalyze"
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
