@@ -10,7 +10,7 @@ dependencies = [
     "pandas>=2.2.3",
     "pytest>=8.3.5",
     "scipy>=1.13.1",
-    "streamlit>=1.43.2",
+    "streamlit==1.42.2",
 ]
 
 [build-system]
