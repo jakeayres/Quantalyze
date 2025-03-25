@@ -1,3 +1,3 @@
 # Quantalyze
 
-Add your description here.
+Utilities for analyzing data.
