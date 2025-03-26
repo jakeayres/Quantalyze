@@ -15,6 +15,10 @@ The `fitting` module provides tools for fitting mathematical functions to data. 
   - Evaluate the fitted function at specific points using `evaluate(x)`.
   - Plot the fitted function using `plot(ax, x, **kwargs)`.
 
+### fit()
+
+## ::: quantalyze.core.fitting.fit
+
 ### Example
 
 ```python

@@ -43,20 +43,25 @@ class Fit:
 def fit(func, df, x_column, y_column, x_min=None, x_max=None, y_min=None, y_max=None, p0=None):
     """
     Fits a given function to data in a DataFrame within an optional x and y range.
-    
-    Parameters:
-    func (callable): The function to fit to the data. It should take x data as the first argument and parameters to fit as subsequent arguments.
-    df (pandas.DataFrame): The input DataFrame containing the data.
-    x_column (str): The name of the column in the DataFrame to use as the x data.
-    y_column (str): The name of the column in the DataFrame to use as the y data.
-    x_min (float, optional): The minimum value of x to include in the fitting. Defaults to None.
-    x_max (float, optional): The maximum value of x to include in the fitting. Defaults to None.
-    y_min (float, optional): The minimum value of y to include in the fitting. Defaults to None.
-    y_max (float, optional): The maximum value of y to include in the fitting. Defaults to None.
-    p0 (array-like, optional): Initial guess for the parameters. Defaults to None.
-    
+
+    Args:
+        func (callable): The function to fit to the data. It should take x data as the first argument 
+            and parameters to fit as subsequent arguments.
+        df (pandas.DataFrame): The input DataFrame containing the data.
+        x_column (str): The name of the column in the DataFrame to use as the x data.
+        y_column (str): The name of the column in the DataFrame to use as the y data.
+        x_min (float, optional): The minimum value of x to include in the fitting. Defaults to None.
+        x_max (float, optional): The maximum value of x to include in the fitting. Defaults to None.
+        y_min (float, optional): The minimum value of y to include in the fitting. Defaults to None.
+        y_max (float, optional): The maximum value of y to include in the fitting. Defaults to None.
+        p0 (array-like, optional): Initial guess for the parameters. Defaults to None.
+
     Returns:
-    Fit: An instance of the Fit class containing the fitted function and parameters.
+        Fit: An instance of the Fit class containing the fitted function and parameters.
+
+    Raises:
+        RuntimeError: If there is no data in the specified x or y range to fit.
+        ValueError: If the initial guess `p0` does not have the correct length.
     """
     # Filter the dataframe based on x_min and x_max
     if x_min is not None:

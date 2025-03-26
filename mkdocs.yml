@@ -7,3 +7,6 @@ nav:
   - Thermometry: thermometry.md
 theme:
   name: material
+plugins:
+  - search
+  - mkdocstrings
