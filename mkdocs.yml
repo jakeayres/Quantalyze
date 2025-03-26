@@ -1,0 +1,9 @@
+site_name: Quantalyze
+nav:
+  - Home: index.md
+  - Core: core.md
+  - Transport: transport.md
+  - Plotting: plotting.md
+  - Thermometry: thermometry.md
+theme:
+  name: material
