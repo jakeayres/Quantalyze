@@ -3,7 +3,7 @@ from .smoothing import bin
 
 
 
-def symmetrize(dfs, x_column, y_column, minimum, maximum, step):
+def symmetrize(dfs, x_column, y_column, minimum, maximum, step) -> pd.DataFrame:
     """
     Symmetrizes the given dataframes by combining them, filtering based on the x_column values,
     and then averaging the y_column values with their reversed counterparts.
@@ -29,7 +29,7 @@ def symmetrize(dfs, x_column, y_column, minimum, maximum, step):
     return new_df
 
 
-def antisymmetrize(dfs, x_column, y_column, minimum, maximum, step):
+def antisymmetrize(dfs, x_column, y_column, minimum, maximum, step) -> pd.DataFrame:
     """
     Antisymmetrizes the given dataframes by reflecting the y-values around the x-axis.
 

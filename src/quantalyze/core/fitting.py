@@ -12,7 +12,7 @@ class Fit:
         covariance (2D array): The estimated covariance of `parameters`.
     """
 
-    def __init__(self, func, parameters, covariance):
+    def __init__(self, function, parameters, covariance):
         """
         Initialize a Fit instance.
 

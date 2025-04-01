@@ -71,10 +71,8 @@ result = fit(f, df, 'x', 'y').plot(ax, np.linspace(0, 20, 10), color='k', linewi
 fig.show()
 ```
 
-## fit(...)
-### ::: quantalyze.core.fitting.fit
+## ::: quantalyze.core.fitting.fit
 
 
-## Fit(...)
-### ::: quantalyze.core.fitting.Fit
+## ::: quantalyze.core.fitting.Fit
 
