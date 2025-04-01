@@ -1,7 +1,12 @@
 site_name: Quantalyze
 nav:
   - Home: index.md
-  - Core: core.md
+  - Core:
+      - Overview: core.md
+      - Fitting: fitting.md
+      - Differentiation: differentiation.md
+      - Smoothing: smoothing.md
+      - Symmetrization: symmetrization.md
   - Transport: transport.md
   - Plotting: plotting.md
   - Thermometry: thermometry.md

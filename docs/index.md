@@ -1,17 +1,5 @@
-# Welcome to MkDocs
+# Quantalyze Documentation
 
-For full documentation visit [mkdocs.org](https://www.mkdocs.org).
+If your analysis and visualization workflow is some combination of `pandas`, `numpy`, `scipy` and `matplotlib`, it is likely that `quantalyze` can save you a lot of time. `Quantalyze` is a set of utility functions that facilitate the analysis of scientific data. Most of the operations are designed to work on `pandas.DataFrame` objects and functionality is pulled from a combination of `numpy`, `scipy`.
 
-## Commands
-
-* `mkdocs new [dir-name]` - Create a new project.
-* `mkdocs serve` - Start the live-reloading docs server.
-* `mkdocs build` - Build the documentation site.
-* `mkdocs -h` - Print help message and exit.
-
-## Project layout
-
-    mkdocs.yml    # The configuration file.
-    docs/
-        index.md  # The documentation homepage.
-        ...       # Other markdown pages, images and other files.
+Non-domain-specific functionality is contained within the `core` module. Domain-specific utilities are contained within their respective modules and import from the `core` module. For example, the `transport` module contains a function that calculates the magnetoresistance from resistivity data taken in magnetic fields that pulls its functionality from `core.smoothing` (binning onto equally spaced x values) and `core.symmetrization` (the symmetrization in field).
