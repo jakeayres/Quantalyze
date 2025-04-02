@@ -16,3 +16,4 @@ build:
   jobs:
      pre_install:
        - pip install mkdocs-material
+       - pip install mkdocstrings[python]
