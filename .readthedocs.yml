@@ -16,11 +16,11 @@ build:
       - asdf global uv latest
       - uv venv
     install:
-      - "true"
+      - uv pip install -r requirements.txt
     build:
       html:
         - uv run mkdocs build
-
+      
       
 
 mkdocs:
