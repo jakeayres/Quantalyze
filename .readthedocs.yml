@@ -20,7 +20,8 @@ build:
       - uv pip install -r requirements.txt
     build:
       html:
-        - uv run mkdocs build --strict --site-dir $READTHEDOCS_OUTPUT/html
+        #- uv run mkdocs build --strict --site-dir $READTHEDOCS_OUTPUT/html
+        #- uv run mkdocs build --site-dir $READTHEDOCS_OUTPUT/html
       
       
 
