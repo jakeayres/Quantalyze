@@ -7,6 +7,7 @@ nav:
       - Differentiation: differentiation.md
       - Smoothing: smoothing.md
       - Symmetrization: symmetrization.md
+      - Interpolation: interpolation.md
   - Transport: transport.md
   - Plotting: plotting.md
   - Thermometry: thermometry.md

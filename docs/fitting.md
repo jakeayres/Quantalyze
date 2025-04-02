@@ -1,3 +1,5 @@
+# Fitting
+
 The `fitting` module provides a simple wrapper for `scipy.curve_fit()` that facilitates the rapid fitting to data held in a `pandas.DataFrame` and subsequent evaluation and plotting of these fits. The expected work flow is to call `quantalyze.fit(...)` and either retrieve the result of the fit from the attributes of the returned `Fit` object or call one of the `Fit` object's utility methods (e.g. `evaluate(...)` or `plot(...)`).
 
 
