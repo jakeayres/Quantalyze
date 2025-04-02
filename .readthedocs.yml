@@ -21,7 +21,7 @@ build:
     build:
       html:
         #- uv run mkdocs build --strict --site-dir $READTHEDOCS_OUTPUT/html
-        #- uv run mkdocs build --site-dir $READTHEDOCS_OUTPUT/html
+        - uv run mkdocs build --site-dir $READTHEDOCS_OUTPUT/html
       
       
 
