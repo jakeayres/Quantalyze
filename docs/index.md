@@ -1,4 +1,4 @@
-# Quantalyze Documentation
+# Quantalyze
 
 If your analysis and visualization workflow is some combination of `pandas`, `numpy`, `scipy` and `matplotlib`, it is likely that `quantalyze` can save you a lot of time. `Quantalyze` is a set of utility functions that facilitate the analysis of scientific data. Most of the operations are designed to work on `pandas.DataFrame` objects and functionality is pulled from a combination of `numpy`, `scipy`.
 
