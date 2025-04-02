@@ -16,6 +16,7 @@ build:
       - asdf global uv latest
       - uv venv
     install:
+      - uv pip compile pyproject.toml -o requirements.txt
       - uv pip install -r requirements.txt
     build:
       html:
