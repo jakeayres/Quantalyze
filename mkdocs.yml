@@ -1,5 +1,4 @@
 site_name: Quantalyze
-repo_url: https://github.com/jakeayres/Quantalyze
 nav:
   - Home: index.md
   - Core:
