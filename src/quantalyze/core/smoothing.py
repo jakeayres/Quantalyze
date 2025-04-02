@@ -15,6 +15,10 @@ def bin(dfs, column, minimum, maximum, width) -> pd.DataFrame:
 
     Returns:
         pandas.DataFrame: A DataFrame containing the mean values of each bin, with the bin midpoints as the values in the specified column.
+        
+    Examples:
+        >>> import quantalyze as qz
+        >>> binned_df = qz.bin(df, 'column_to_bin', minimum=0, maximum=100, width=0.5)
     """
     def bin_single_df(df):
         bin_edges = np.arange(minimum - width / 2, maximum + width / 2 + width, width)
@@ -44,6 +48,10 @@ def window(df, column, window_size=5, window_type='triang') -> pd.Series:
 
     Returns:
         pandas.Series: A Series with the smoothed values.
+        
+    Examples:
+        >>> import quantalyze as qz
+        >>> df['smoothed_column'] = qz.window(df, 'column_to_be_smoothed', window_size=7)
     """
     return df[column].rolling(window=window_size, win_type=window_type, center=True).mean()
 
@@ -60,6 +68,10 @@ def savgol_filter(df, column, window_size=5, order=2) -> pd.Series:
 
     Returns:
         pandas.Series: A Series with the smoothed values.
+        
+    Examples:
+        >>> import quantalyze as qz
+        >>> df['smoothed_column'] = qz.savgol_filter(df, 'column_to_be_smoothed', window_size=7, order=2)
     """
     return pd.Series(scipy_savgol_filter(df[column], window_size, order), index=df.index)
 

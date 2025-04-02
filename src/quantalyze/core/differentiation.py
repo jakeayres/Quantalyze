@@ -12,6 +12,10 @@ def forward_difference(df, x_column, y_column) -> pd.Series:
 
     Returns:
         pandas.Series: A Series containing the forward differences of the y-values with respect to the x-values.
+        
+    Examples:
+        >>> import quantalize as qz
+        >>> df['forward_diff'] = qz.forward_difference(df, 'x', 'y')
     """
     forward_diff = df[y_column].diff().shift(-1) / df[x_column].diff().shift(-1)
     return forward_diff
@@ -28,6 +32,10 @@ def backward_difference(df, x_column, y_column) -> pd.Series:
 
     Returns:
         pandas.Series: The backward difference of the y_column with respect to the x_column.
+        
+    Examples:
+        >>> import quantalize as qz
+        >>> df['backward_diff'] = qz.backward_difference(df, 'x', 'y')
     """
     backward_diff = df[y_column].diff() / df[x_column].diff()
     return backward_diff
@@ -47,6 +55,10 @@ def central_difference(df, x_column, y_column) -> pd.Series:
 
     Returns:
         pandas.Series: A Series containing the central difference values.
+        
+    Examples:
+        >>> import quantalize as qz
+        >>> df['central_diff'] = qz.central_difference(df, 'x', 'y')
     """
     forward_diff = forward_difference(df, x_column, y_column)
     backward_diff = backward_difference(df, x_column, y_column)
@@ -69,5 +81,9 @@ def derivative(df, x_column, y_column) -> pd.Series:
 
     Returns:
         pandas.Series: A Series with the derivative values.
+        
+    Examples:
+        >>> import quantalize as qz
+        >>> df['derivative'] = qz.derivative(df, 'x', 'y')
     """
     return central_difference(df, x_column, y_column)

@@ -17,6 +17,17 @@ def symmetrize(dfs, x_column, y_column, minimum, maximum, step) -> pd.DataFrame:
 
     Returns:
         pd.DataFrame: A new dataframe with symmetrized y_column values.
+        
+    Examples:
+        >>> import quantalyze as qz
+        >>> df = qz.symmetrize(
+        >>>     dfs=[df1, df2],
+        >>>     x_column='field',
+        >>>     y_column='voltage',
+        >>>     minimum=-14,
+        >>>     maximum=14,
+        >>>     step=0.05,
+        >>> )
     """
     dfs = [df[(df[x_column] >= minimum) & (df[x_column] <= maximum)] for df in dfs]
     combined = pd.concat(dfs)
@@ -43,6 +54,17 @@ def antisymmetrize(dfs, x_column, y_column, minimum, maximum, step) -> pd.DataFr
 
     Returns:
         pd.DataFrame: A new dataframe with antisymmetrized y-values.
+        
+    Examples:
+        >>> import quantalyze as qz
+        >>> df = qz.antisymmetrize(
+        >>>     dfs=[df1, df2],
+        >>>     x_column='field',
+        >>>     y_column='voltage',
+        >>>     minimum=-14,
+        >>>     maximum=14,
+        >>>     step=0.05,
+        >>> )
     """
     dfs = [df[(df[x_column] >= minimum) & (df[x_column] <= maximum)] for df in dfs]
     combined = pd.concat(dfs)
