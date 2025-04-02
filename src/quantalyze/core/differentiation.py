@@ -55,7 +55,7 @@ def central_difference(df, x_column, y_column) -> pd.Series:
 
 
 
-def derivative(df, x_column, y_column):
+def derivative(df, x_column, y_column) -> pd.Series:
     """
     Calculates the derivative of the y_column with respect to the x_column.
 

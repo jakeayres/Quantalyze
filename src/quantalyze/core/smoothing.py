@@ -2,7 +2,6 @@ import pandas as pd
 import numpy as np
 from scipy.signal import savgol_filter as scipy_savgol_filter
 
-
 def bin(dfs, column, minimum, maximum, width) -> pd.DataFrame:
     """
     Bins the data in the specified column of the DataFrame(s) into equal-width bins and computes the mean of each bin.
