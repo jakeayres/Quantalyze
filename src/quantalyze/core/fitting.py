@@ -1,5 +1,6 @@
 from scipy.optimize import curve_fit
 from inspect import signature
+import pandas as pd
 
 
 class Fit:
@@ -52,7 +53,7 @@ class Fit:
         ax.plot(x, self.evaluate(x), **kwargs)
 
 
-def fit(function: callable, df: pd.DataFrame, x_column, y_column, x_min=None, x_max=None, y_min=None, y_max=None, p0=None):
+def fit(function: callable, df: pd.DataFrame, x_column, y_column, x_min=None, x_max=None, y_min=None, y_max=None, p0=None) -> Fit:
     """
     Fits a given function to data in a DataFrame within an optional x and y range.
 

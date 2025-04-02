@@ -20,7 +20,7 @@ def test_fit_linear_function():
     fit_result = fit(linear_func, df, 'x', 'y')
 
     # Assert that the optimal parameters are close to the expected values
-    np.testing.assert_allclose(fit_result.popt, [3, 2], rtol=1e-2)
+    np.testing.assert_allclose(fit_result.parameters, [3, 2], rtol=1e-2)
 
 
 def test_fit_with_x_range():
@@ -38,7 +38,7 @@ def test_fit_with_x_range():
     fit_result = fit(quadratic_func, df, 'x', 'y', x_min=2, x_max=8)
 
     # Assert that the optimal parameters are close to the expected values
-    np.testing.assert_allclose(fit_result.popt, [2, 3, 1], rtol=1e-2)
+    np.testing.assert_allclose(fit_result.parameters, [2, 3, 1], rtol=1e-2)
 
 
 def test_fit_with_no_data_in_range():
