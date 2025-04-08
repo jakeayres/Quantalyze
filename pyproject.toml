@@ -2,6 +2,8 @@
 name = "quantalyze"
 version = "0.1.2"
 description = "Utility functions for analyzing scientific data."
+license = "MIT"
+license-files = "LICENSE*"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
@@ -13,6 +15,14 @@ dependencies = [
     "pytest>=8.3.5",
     "scipy>=1.13.1",
 ]
+
+
+[project.urls]
+Homepage = "https://github.com/jakeayres/Quantalyze"
+Documentation = "https://quantalyze.readthedocs.io/en/latest/"
+Repository = "https://github.com/jakeayres/Quantalyze.git"
+Issues = "https://github.com/jakeayres/Quantalyze/issues"
+
 
 [build-system]
 requires = ["hatchling"]
