@@ -1,7 +1,10 @@
 # Quantalyze
 
+<p align="center">
+<a href=""><img src="https://img.shields.io/pypi/pyversions/quantalyze" alt="Python versions"></a>
 <a href="https://quantalyze.readthedocs.io/en/latest/?badge=latest"><img src="https://readthedocs.org/projects/quantalyze/badge/?version=latest" alt="Documentation Status"></a>
 <a href="https://pypi.org/project/quantalyze/"><img src="https://shields.io/pypi/v/quantalyze" alt="PyPI"></a>
+</p>
 
 If your analysis and visualization workflow is some combination of `pandas`, `numpy`, `scipy` and `matplotlib`, it is likely that `quantalyze` can save you a lot of time. `Quantalyze` is a set of utility functions that facilitate the analysis of scientific data. Most of the operations are designed to work on `pandas.DataFrame` objects and functionality is pulled from a combination of `numpy`, `scipy`.
 

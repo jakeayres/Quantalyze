@@ -1,6 +1,7 @@
 # Quantalyze
 
 <p align="center">
+<a href=""><img src="https://img.shields.io/pypi/pyversions/quantalyze" alt="Python versions"></a>
 <a href="https://quantalyze.readthedocs.io/en/latest/?badge=latest"><img src="https://readthedocs.org/projects/quantalyze/badge/?version=latest" alt="Documentation Status"></a>
 <a href="https://pypi.org/project/quantalyze/"><img src="https://shields.io/pypi/v/quantalyze" alt="PyPI"></a>
 </p>
