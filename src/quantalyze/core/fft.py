@@ -50,6 +50,8 @@ def fft(df: pd.DataFrame, x_column: str, y_column: str, n: int = None, window: W
     
     # Apply the window function if provided
     if window is not None:
+        if not isinstance(window, Window):
+            raise ValueError(f"Unsupported window type: {window}")
         win = window.get_window(len(y_values), beta=beta)
         y_values = y_values * win
         
