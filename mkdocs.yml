@@ -8,6 +8,7 @@ nav:
       - Smoothing: smoothing.md
       - Symmetrization: symmetrization.md
       - Interpolation: interpolation.md
+      - FFT: fft.md
   - Transport: transport.md
   - Plotting: plotting.md
   - Thermometry: thermometry.md
