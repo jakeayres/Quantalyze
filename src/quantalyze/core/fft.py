@@ -4,6 +4,29 @@ from enum import Enum
 
 
 class Window(Enum):
+    """
+    An enumeration representing different types of window functions for signal processing.
+    
+    Attributes:
+        HANN (str): Hann window.
+        HAMMING (str): Hamming window.
+        BLACKMAN (str): Blackman window.
+        BARTLETT (str): Bartlett window.
+        KAISER (str): Kaiser window, requires an additional beta parameter.
+        
+    Methods:
+        get_window(length: int, beta: Optional[float] = None) -> np.ndarray:
+            Generates the specified window function as a NumPy array.
+            Parameters:
+                length (int): The length of the window.
+                beta (Optional[float]): The beta parameter for the Kaiser window. 
+                                        Required only for the Kaiser window.
+            Returns:
+                np.ndarray: The generated window function.
+            Raises:
+                ValueError: If the Kaiser window is selected but the beta parameter is not provided.
+                ValueError: If an unsupported window type is specified.
+    """
     HANN = 'hann'
     HAMMING = 'hamming'
     BLACKMAN = 'blackman'
@@ -30,6 +53,7 @@ class Window(Enum):
 def fft(df: pd.DataFrame, x_column: str, y_column: str, n: int = None, window: Window = None, beta: float = None) -> pd.DataFrame:
     """
     Computes the Fast Fourier Transform (FFT) of a signal in a DataFrame. Interpolates onto equally spaced x values.
+    
     Args:
         df (pd.DataFrame): The input DataFrame containing the signal.
         x_column (str): The name of the column representing the x-axis (time or frequency).
@@ -37,6 +61,7 @@ def fft(df: pd.DataFrame, x_column: str, y_column: str, n: int = None, window: W
         n (int, optional): Number of points to compute the FFT. If None, uses the length of the signal.
         window (Window, optional): Window function to apply before FFT. If None, no window is applied.
         beta (float, optional): Beta parameter for the Kaiser window. Required if the Kaiser window is used.
+        
     Returns:
         pd.DataFrame: A DataFrame containing the frequency and FFT amplitude.
     """
