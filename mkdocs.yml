@@ -12,6 +12,9 @@ nav:
   - Transport: transport.md
   - Plotting: plotting.md
   - Thermometry: thermometry.md
+  - Beta:
+      - Overview: beta.md
+
 theme:
   name: material
 plugins:
