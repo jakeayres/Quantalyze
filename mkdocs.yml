@@ -1,6 +1,6 @@
 site_name: Quantalyze
 nav:
-  - Home: index.md
+  - Overview: index.md
   - Core:
       - Overview: core.md
       - Fitting: fitting.md
@@ -32,4 +32,7 @@ plugins:
             show_symbol_type_heading: true
             show_symbol_type_toc: true
             show_docstring_examples: true
-            
+markdown_extensions:
+  - attr_list
+  - md_in_html
+  - pymdownx.blocks.caption
