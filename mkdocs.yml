@@ -2,15 +2,15 @@ site_name: Quantalyze
 repo_url: https://github.com/jakeayres/Quantalyze
 repo_name: Quantalyze
 nav:
-  - Home: index.md
-  - Core: 
-      - Overview: core/overview.md
-      - Fitting: core/fitting.md
-      - Differentiation: core/differentiation.md
-      - Smoothing: core/smoothing.md
-      - Symmetrization: core/symmetrization.md
-      - Interpolation: core/interpolation.md
-      - FFT: core/fft.md
+  - Overview: index.md
+  - Core:
+      - Overview: core.md
+      - Fitting: fitting.md
+      - Differentiation: differentiation.md
+      - Smoothing: smoothing.md
+      - Symmetrization: symmetrization.md
+      - Interpolation: interpolation.md
+      - FFT: fft.md
   - Transport: transport.md
   - Beta:
       - Overview: beta/overview.md
@@ -39,4 +39,7 @@ plugins:
             show_symbol_type_heading: true
             show_symbol_type_toc: true
             show_docstring_examples: true
-            
+markdown_extensions:
+  - attr_list
+  - md_in_html
+  - pymdownx.blocks.caption
