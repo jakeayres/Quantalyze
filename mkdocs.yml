@@ -4,13 +4,13 @@ repo_name: Quantalyze
 nav:
   - Overview: index.md
   - Core:
-      - Overview: core.md
-      - Fitting: fitting.md
-      - Differentiation: differentiation.md
-      - Smoothing: smoothing.md
-      - Symmetrization: symmetrization.md
-      - Interpolation: interpolation.md
-      - FFT: fft.md
+      - Overview: core/overview.md
+      - Fitting: core/fitting.md
+      - Differentiation: core/differentiation.md
+      - Smoothing: core/smoothing.md
+      - Symmetrization: core/symmetrization.md
+      - Interpolation: core/interpolation.md
+      - FFT: core/fft.md
   - Transport: transport.md
   - Beta:
       - Overview: beta/overview.md
