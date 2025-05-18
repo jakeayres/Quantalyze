@@ -1,7 +1,9 @@
 site_name: Quantalyze
+repo_url: https://github.com/jakeayres/Quantalyze
+repo_name: Quantalyze
 nav:
   - Home: index.md
-  - Core:
+  - Core: 
       - Overview: core/overview.md
       - Fitting: core/fitting.md
       - Differentiation: core/differentiation.md
@@ -18,6 +20,7 @@ nav:
 
 theme:
   name: material
+
 markdown_extensions:
   - attr_list
   - md_in_html
