@@ -1,9 +1,4 @@
 <figure markdown="span">
-  ![Quantalyze](logo.png){ width="400" }
-</figure>
-
-
-<figure markdown="span">
   ![Quantalyze Logo](logo.png){ width="400" }
 </figure>
 
