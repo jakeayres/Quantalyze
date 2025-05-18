@@ -20,6 +20,11 @@ nav:
 
 theme:
   name: material
+  icon:
+    repo: fontawesome/brands/git
+  features:
+    - navigation.footer
+
 
 markdown_extensions:
   - attr_list
