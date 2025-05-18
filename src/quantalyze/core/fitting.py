@@ -38,7 +38,7 @@ class Fit:
         """
         return self.function(x, *self.parameters)
 
-    def plot(self, ax, x, **kwargs):
+    def plot(self, ax, x, **kwargs) -> None:
         """
         Plot the evaluated function on the given axes.
 
@@ -53,7 +53,17 @@ class Fit:
         ax.plot(x, self.evaluate(x), **kwargs)
 
 
-def fit(function: callable, df: pd.DataFrame, x_column, y_column, x_min=None, x_max=None, y_min=None, y_max=None, p0=None) -> Fit:
+def fit(
+    function: callable, 
+    df: pd.DataFrame, 
+    x_column, 
+    y_column, 
+    x_min=None, 
+    x_max=None, 
+    y_min=None, 
+    y_max=None, 
+    p0=None
+) -> Fit:
     """
     Fits a given function to data in a DataFrame within an optional x and y range.
 

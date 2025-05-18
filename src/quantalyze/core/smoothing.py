@@ -74,5 +74,3 @@ def savgol_filter(df, column, window_size=5, order=2) -> pd.Series:
         >>> df['smoothed_column'] = qz.savgol_filter(df, 'column_to_be_smoothed', window_size=7, order=2)
     """
     return pd.Series(scipy_savgol_filter(df[column], window_size, order), index=df.index)
-
-
