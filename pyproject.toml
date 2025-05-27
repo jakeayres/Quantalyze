@@ -10,6 +10,7 @@ dependencies = [
     "matplotlib>=3.9.4",
     "mkdocs-material>=9.6.9",
     "mkdocstrings-python>=1.16.8",
+    "numba>=0.60.0",
     "numpy>=2.0.2",
     "pandas>=2.2.3",
     "pytest>=8.3.5",
