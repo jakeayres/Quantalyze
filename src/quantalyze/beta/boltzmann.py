@@ -18,7 +18,7 @@ class FermiSurface:
     
     
     def effective_mass(self, phi):
-        return 5.0 * electron_mass
+        return 5.0 * electron_mass# + np.cos(4 * phi)*3*electron_mass
     
     
     def cyclotron_frequency(self, phi, field):
@@ -49,17 +49,41 @@ class FermiSurface:
     
     def fermi_velocity_y(self, phi):
         return self.fermi_wavevector(phi) * np.sin(phi - self.zeta(phi)) * hbar / self.effective_mass(phi)
+    
+
+    def damping_exponent(self, theta, phi, field, n_points=100):
+        """
+        Vectorized approximation of the damping exponent using the trapezoidal rule.
+        theta, phi can be arrays (broadcastable).
+        """
+        theta = np.asarray(theta)
+        phi = np.asarray(phi)
+        lower = theta - phi
+        upper = theta
+
+        # Broadcast shapes
+        shape = np.broadcast(theta, phi).shape
+        lower = np.broadcast_to(lower, shape)
+        upper = np.broadcast_to(upper, shape)
+
+        # Integration points along the last axis
+        x = np.linspace(0, 1, n_points)
+        x = x.reshape((-1,) + (1,) * len(shape))  # shape (n_points, 1, ..., 1)
+        # Interpolate between lower and upper for each theta, phi
+        xs = lower + (upper - lower) * x  # shape (n_points, ...)
+
+        # Evaluate integrand at each point
+        integrand = 1 / (self.cyclotron_frequency(xs, field) * self.relaxation_time(xs))
+        # Integrate along the first axis (integration variable)
+        integral = np.trapezoid(integrand, xs, axis=0)
+        return integral
 
 
     def damping_factor(self, theta, phi, field):
-        integral = quad(
-            lambda x: 1/(self.cyclotron_frequency(x, field) * self.relaxation_time(x)), 
-            theta - phi, 
-            theta
-        )[0]
-        return np.exp(-integral)
-    
-    
+        exponent = self.damping_exponent(theta, phi, field)
+        return np.exp(-exponent)
+
+
     def prefactor(self, field):
         numerator = elementary_charge**3 * field
         denominator = 2 * pi**2 * hbar**2 * 13e-10
@@ -94,11 +118,10 @@ class FermiSurface:
         
         t0 = time.time()
         
-        y = np.zeros((len(theta), len(phi)))
-        for i, t in enumerate(theta):
-            for j, p in enumerate(phi):
-                y[i, j] = self.integrand(t, p, field)
-                
+        theta_mesh, phi_mesh = np.meshgrid(theta, phi, indexing='ij')
+        y = np.zeros_like(theta_mesh)
+        y = self.integrand(theta_mesh, phi_mesh, field)
+
         print(f"Time taken for integrand calculation: {time.time() - t0:.2f} seconds")
         
         return self.prefactor(field) * np.trapezoid(np.trapezoid(y, phi, axis=1), theta)
@@ -127,25 +150,15 @@ class FermiSurface:
 
 fs = FermiSurface()
 
-fig, ax = plt.subplots(figsize=(10, 6))
-fs.plot_relaxation_rate(ax)
 
 fig, ax = plt.subplots(figsize=(10, 6))
 
 
 for B in np.arange(1, 50, 10):
-    
-    phi = fs._find_phi(0, B)
-    
-    y = [fs.damping_factor(0, x, B) for x in phi]
-    ax.plot(phi, y, '.-', label='Damping Factor')
-    
-    # y = [fs.damping_factor(np.pi/8, x, 1) for x in theta]
-    # ax.plot(theta, y, label='Damping Factor')
+
+    sigma = fs.conductivity(B)
+    print(1/sigma * 1e8)
+    ax.plot(B, 1/sigma * 1e8, 'o', label=f'B = {B} T')
+
 
 plt.show()
-
-print('Geomspace integration results:')
-for B in np.arange(1, 50, 10):
-    x = fs.conductivity(B)
-    print(1/x * 1e8)
