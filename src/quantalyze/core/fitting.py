@@ -53,6 +53,40 @@ class Fit:
         ax.plot(x, self.evaluate(x), **kwargs)
 
 
+    def _function_args(self):
+        """
+        Get the names of the parameters of the fitted function.
+
+        Returns:
+            list: A list of parameter names.
+        """
+        return list(signature(self.function).parameters.keys())[1:]
+    
+
+    def __getitem__(self, key):
+        """
+        Get the parameter value by name.
+
+        Args:
+            key (str): The name of the parameter.
+
+        Returns:
+            float: The value of the parameter.
+        """
+
+        if isinstance(key, str):
+            if key in self._function_args():
+                return self.parameters[self._function_args().index(key)]
+            else:
+                raise KeyError(f"Parameter '{key}' not found in fitted function.")
+        elif isinstance(key, int):
+            if 0 <= key < len(self.parameters):
+                return self.parameters[key]
+            else:
+                raise IndexError(f"Index {key} out of range for parameters.")
+        else:
+            raise TypeError(f"Unsupported key type: {type(key)}")
+        
 def fit(
     function: callable, 
     df: pd.DataFrame, 
@@ -62,7 +96,8 @@ def fit(
     x_max=None, 
     y_min=None, 
     y_max=None, 
-    p0=None
+    p0=None,
+    **kwargs,
 ) -> Fit:
     """
     Fits a given function to data in a DataFrame within an optional x and y range.
@@ -78,7 +113,8 @@ def fit(
         y_min (float, optional): The minimum value of y to include in the fitting. Defaults to None.
         y_max (float, optional): The maximum value of y to include in the fitting. Defaults to None.
         p0 (array-like, optional): Initial guess for the parameters. Must have a length equal to that of the number of free parameters in `function` Defaults to None.
-
+        **kwargs: Additional keyword arguments passed to `curve_fit`.
+        
     Returns:
         Fit: An instance of the Fit class containing the fitted function and parameters.
 
@@ -113,6 +149,6 @@ def fit(
             raise ValueError(f"Initial guess p0 must have length {num_params}, but got {len(p0)}.")
     
     # Perform curve fitting
-    parameters, covariance = curve_fit(function, x_data, y_data, p0=p0)
+    parameters, covariance = curve_fit(function, x_data, y_data, p0=p0, **kwargs)
     
     return Fit(function=function, parameters=parameters, covariance=covariance)

@@ -1,7 +1,7 @@
 import pytest
 import pandas as pd
-from quantalyze.core import derivative
-from quantalyze.core import forward_difference, backward_difference, central_difference, derivative
+from quantalyze.core.differentiation import derivative
+from quantalyze.core.differentiation import forward_difference, backward_difference, central_difference, derivative
 
 
 def test_forward_difference():
