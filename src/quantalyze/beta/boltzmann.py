@@ -1,9 +1,6 @@
 import numpy as np
 from scipy.constants import hbar, pi
-from scipy.interpolate import interp1d
-from scipy.integrate import cumulative_trapezoid
 from scipy.constants import electron_mass, elementary_charge
-from scipy.integrate import dblquad, quad, fixed_quad
 from numba import njit
 import time
 
@@ -18,18 +15,27 @@ class FermiSurface:
     @staticmethod
     @njit
     def relaxation_time(phi):
+        """
+        Relaxation time as a function of angle phi.
+        """
         return 0.2e-12 - 0.02e-12 * np.cos(4 * phi)
     
     
     @staticmethod
     @njit
     def effective_mass(phi):
+        """
+        Effective mass as a function of angle phi.
+        """
         return 5.0 * electron_mass
     
     
     @staticmethod
     @njit
     def fermi_wavevector(phi):
+        """
+        Fermi wavevector as a function of angle phi.
+        """
         k00 = 0.728e10
         k40 = -3.3e-2 * k00
         return k00 + np.cos(4*phi) * k40
@@ -37,11 +43,18 @@ class FermiSurface:
     
     
     def cyclotron_frequency(self, phi, field):
+        """
+        Cyclotron frequency as a function of angle phi and magnetic field.
+        """
         return elementary_charge * field / self.effective_mass(phi)
     
     
     
     def zeta(self, phi):
+        """
+        Zeta (angle between Kf and Vf) as a function of angle phi given
+        Vf is enforced to be normal to the Fermi surface.
+        """
         dphi = 1e-6
         ln_kf_plus = np.log(self.fermi_wavevector(phi + dphi))
         ln_kf_minus = np.log(self.fermi_wavevector(phi - dphi))
@@ -50,14 +63,23 @@ class FermiSurface:
     
     
     def fermi_velocity(self, phi):
+        """
+        Fermi velocity as a function of angle phi.
+        """
         return self.fermi_wavevector(phi) * hbar / self.effective_mass(phi)
     
     
     def fermi_velocity_x(self, phi):
+        """
+        Fermi velocity in the x-direction as a function of angle phi.
+        """
         return self.fermi_wavevector(phi) * np.cos(phi - self.zeta(phi)) * hbar / self.effective_mass(phi)
     
     
     def fermi_velocity_y(self, phi):
+        """
+        Fermi velocity in the y-direction as a function of angle phi.
+        """
         return self.fermi_wavevector(phi) * np.sin(phi - self.zeta(phi)) * hbar / self.effective_mass(phi)
     
 
@@ -90,11 +112,18 @@ class FermiSurface:
 
 
     def damping_factor(self, theta, phi, field):
+        """
+        Relaxation damping factor as a function of theta, phi, and field.
+        """
         exponent = self.damping_exponent(theta, phi, field)
         return np.exp(-exponent)
 
 
     def prefactor(self, field):
+        """
+        Prefactor for the conductivity calculation. Physical constants
+        and c-axis lattice parameter.
+        """
         numerator = elementary_charge**3 * field
         denominator = 2 * pi**2 * hbar**2 * 13e-10
         return numerator / denominator
@@ -102,6 +131,9 @@ class FermiSurface:
     
     
     def integrand_xx(self, theta, phi, field):
+        """
+        Integrand for the xx component of the conductivity.
+        """
         numerator = self.fermi_velocity_x(theta) * self.fermi_velocity_x(theta - phi)
         denominator = self.cyclotron_frequency(theta, field) * self.cyclotron_frequency(theta - phi, field)
         damp = self.damping_factor(theta, phi, field)
@@ -110,6 +142,9 @@ class FermiSurface:
     
     
     def integrand_xy(self, theta, phi, field):
+        """
+        Integrand for the xy component of the conductivity.
+        """
         numerator = self.fermi_velocity_x(theta) * self.fermi_velocity_y(theta - phi)
         denominator = self.cyclotron_frequency(theta, field) * self.cyclotron_frequency(theta - phi, field)
         damp = self.damping_factor(theta, phi, field)
@@ -117,6 +152,9 @@ class FermiSurface:
     
     
     def _find_damping_integration_limit(self, theta, field):
+        """
+        Find the maximum phi for which the damping factor is still significant.
+        """
         phi_max = 1e-3
         while self.damping_factor(theta, phi_max, field) > 1e-4:
             phi_max *= 1.5
@@ -124,6 +162,10 @@ class FermiSurface:
     
     
     def _find_phi(self, theta, field, points=100):
+        """
+        Adaptive phi range/step used for integration. High density of points at
+        small phi given that the damping factor decays exponentially.
+        """
         phi_max = self._find_damping_integration_limit(theta, field)
         phi_min = 1e-6
         phi = np.geomspace(phi_min, phi_max, points)
@@ -132,6 +174,9 @@ class FermiSurface:
 
     
     def conductivity(self, field):
+        """
+        Calculate the conductivity tensor components sigma_xx and sigma_xy
+        """
         theta = np.linspace(0, 2 * pi, 100)
         phi = self._find_phi(0, field, points=500)
         
