@@ -12,9 +12,9 @@ nav:
       - Interpolation: core/interpolation.md
       - FFT: core/fft.md
   - Transport: transport.md
+  - Quantum Oscillations: quantum_oscillations.md
   - Beta:
       - Overview: beta/overview.md
-      - Quantum Oscillations: beta/quantum_oscillations.md
       - Plotting: beta/plotting.md
       - Thermometry: beta/thermometry.md
 
