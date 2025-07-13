@@ -1,4 +1,10 @@
+"""
+This module contains functions for calculating transport properties such as resistance, resistivity, and Hall resistance. Functions act on pandas DataFrames and return Series that can be assigned to new columns in the DataFrame.
+"""
+
+
 import pandas as pd
+
 
 
 def calculate_resistance(df, voltage, current, gain=None) -> pd.Series:
