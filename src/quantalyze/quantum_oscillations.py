@@ -115,7 +115,14 @@ def mean_inverse_field(minimum: float, maximum: float):
     return ((1 / minimum + 1 / maximum) / 2)
 
 
-def fit_effective_mass(df: pd.DataFrame, temperature_column: str, amplitude_column: str, magnetic_field: float, harmonic: int = 1):
+def fit_effective_mass(
+    df: pd.DataFrame, 
+    temperature_column: str, 
+    amplitude_column: str, 
+    magnetic_field: float, 
+    harmonic: int = 1, 
+    p0: list = None,
+):
     """
     Fit the effective mass from quantum oscillation data.
 
@@ -125,6 +132,7 @@ def fit_effective_mass(df: pd.DataFrame, temperature_column: str, amplitude_colu
         amplitude_column (str): Name of the column containing amplitude data.
         magnetic_field (float): Magnetic field in Tesla.
         harmonic (int, optional): Harmonic number. Defaults to 1.
+        p0 (list, optional): Initial guess for the fit parameters. Defaults to None.
 
     Returns:
         float: Effective mass in units of the electron mass.
@@ -133,12 +141,18 @@ def fit_effective_mass(df: pd.DataFrame, temperature_column: str, amplitude_colu
     def model(temperature, prefactor, effective_mass):
         return prefactor * lifshitz_kosevich_damping_factor(temperature, magnetic_field, effective_mass, harmonic)
     
+    if p0 is None:
+        initial_amplitude = df[amplitude_column].max()
+        initial_mass = 1
+        p0 = [initial_amplitude, initial_mass]
+    
     f = fit(
         model,
         df, 
         x_column=temperature_column,
         y_column=amplitude_column,
         bounds=([0, 0], [inf, inf]),
+        p0=p0,
     )
 
     return f

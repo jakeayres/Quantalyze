@@ -1,6 +1,6 @@
 [project]
 name = "quantalyze"
-version = "0.1.6"
+version = "0.1.7"
 description = "Utility functions for analyzing scientific data."
 license = "MIT"
 license-files = ["LICENSE*"]
