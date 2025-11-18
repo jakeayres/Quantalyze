@@ -168,19 +168,24 @@ def build_conductivity(
 
 
     @njit(parallel=True)
-    def conductivity(T, B):
-        
-        N_theta = 1000
-        N_phi = 1500
-        theta_vals = np.linspace(0, np.pi*2, N_theta)
-        phi_vals = np.geomspace(1e-6, np.pi*2, N_phi)
+    def conductivity(
+        temperature, 
+        field, 
+        N_theta=500, 
+        N_phi=1000,
+        theta_range=(0, np.pi*2),
+        phi_range=(1e-6, np.pi*2),
+        ):
+
+        theta_vals = np.linspace(theta_range[0], theta_range[1], N_theta)
+        phi_vals = np.geomspace(phi_range[0], phi_range[1], N_phi)
 
 
         # Precompute the damping exponent for all theta and phi values
         exp_damping_matrix = np.empty((N_theta, N_phi), dtype=np.float64)
         for i in prange(N_theta):
             for j in range(N_phi):
-                exp_damping_matrix[i, j] = exponential_damping(theta_vals[i], phi_vals[j], T, B)
+                exp_damping_matrix[i, j] = exponential_damping(theta_vals[i], phi_vals[j], temperature, field)
 
 
         # Precompute fermi_velocity_x(theta), wc_theta(theta, B)
@@ -188,11 +193,11 @@ def build_conductivity(
         wc_theta = np.empty(N_theta, dtype=np.float64)
         for i in prange(N_theta):
             vx_theta[i] = fermi_velocity_x(theta_vals[i])
-            wc_theta[i] = cyclotron_frequency(theta_vals[i], B)
+            wc_theta[i] = cyclotron_frequency(theta_vals[i], field)
 
 
         # Precompute fermi_velocity_x(theta - phi) and fermi_velocity_y(theta - phi)
-        # and cyclotron_frequency(theta - phi, B)
+        # and cyclotron_frequency(theta - phi, field)
         vx_theta_phi = np.empty((N_theta, N_phi), dtype=np.float64)
         vy_theta_phi = np.empty((N_theta, N_phi), dtype=np.float64)
         wc_theta_phi = np.empty((N_theta, N_phi), dtype=np.float64)
@@ -201,7 +206,7 @@ def build_conductivity(
                 angle = theta_vals[i] - phi_vals[j]
                 vx_theta_phi[i, j] = fermi_velocity_x(angle)
                 vy_theta_phi[i, j] = fermi_velocity_y(angle)
-                wc_theta_phi[i, j] = cyclotron_frequency(angle, B)
+                wc_theta_phi[i, j] = cyclotron_frequency(angle, field)
 
 
         # Main integration loops
@@ -229,7 +234,7 @@ def build_conductivity(
                 x_integral += avg_x * dtheta * dphi
                 y_integral += avg_y * dtheta * dphi
 
-        const = elementary_charge**3 * B / (2 * np.pi**2 * hbar**2 * c_axis_length)
+        const = elementary_charge**3 * field / (2 * np.pi**2 * hbar**2 * c_axis_length)
         return (x_integral * const, y_integral * const)
 
     return conductivity
