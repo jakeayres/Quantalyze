@@ -1,5 +1,5 @@
 
-from ..core.constants import hbar, elementary_charge
+from ..core.constants import HBAR, ELEMENTARY_CHARGE
 import numpy as np
 from numba import njit
 
@@ -164,7 +164,7 @@ def _bilinear_integration(
             yx_integral += avg_yx * dtheta * dphi
             yy_integral += avg_yy * dtheta * dphi
 
-    const = elementary_charge**3 * field / (2 * np.pi**2 * hbar**2 * c_axis_length)
+    const = ELEMENTARY_CHARGE**3 * field / (2 * np.pi**2 * HBAR**2 * c_axis_length)
     return (xx_integral * const, xy_integral * const, yx_integral * const, yy_integral * const)
 
 
@@ -213,13 +213,13 @@ def _compute_conductivity_from_arrays(
     phi = np.geomspace(start_phi, end_phi, phi_points)
 
     # Precompute omega_c and omega_c_tau for all theta values
-    wc_theta = elementary_charge * magnetic_field / effective_mass
+    wc_theta = ELEMENTARY_CHARGE * magnetic_field / effective_mass
     omega_c_tau = wc_theta * relaxation_time
 
     # Precompute the fermi velocity components for all theta values
     zeta = _calculate_zeta_array(theta, fermi_wavevector)
-    vx_theta = hbar * fermi_wavevector * np.cos(theta - zeta) / effective_mass
-    vy_theta = hbar * fermi_wavevector * np.sin(theta - zeta) / effective_mass
+    vx_theta = HBAR * fermi_wavevector * np.cos(theta - zeta) / effective_mass
+    vy_theta = HBAR * fermi_wavevector * np.sin(theta - zeta) / effective_mass
 
     # Precompute the fermi velocity components for all theta - phi values
     # and omega_c for all theta - phi values
@@ -322,7 +322,7 @@ class FermiSurface:
         """
         Compute the local cyclotron frequency for a given magnetic field at each theta value.
         """
-        return elementary_charge * magnetic_field / self.effective_mass
+        return ELEMENTARY_CHARGE * magnetic_field / self.effective_mass
 
 
     def omega_c_tau(self, magnetic_field):
@@ -336,7 +336,7 @@ class FermiSurface:
         """
         Calculate the mean free path of electrons on the Fermi surface.
         """
-        return hbar * self.fermi_wavevector * self.relaxation_time / self.effective_mass
+        return HBAR * self.fermi_wavevector * self.relaxation_time / self.effective_mass
 
 
     def _integrate_fermi_wavevector(self):
