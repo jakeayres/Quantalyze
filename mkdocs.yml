@@ -17,6 +17,7 @@ nav:
       - Overview: beta/overview.md
       - Plotting: beta/plotting.md
       - Thermometry: beta/thermometry.md
+      - Boltzmann: beta/boltzmann.md
 
 theme:
   name: material

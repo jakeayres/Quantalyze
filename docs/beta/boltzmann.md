@@ -1,0 +1,3 @@
+# Boltzmann
+
+::: quantalyze.beta.boltzmann
