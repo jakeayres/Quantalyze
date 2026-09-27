@@ -1,0 +1,2 @@
+MR at 30 T: 0.017, at 60 T: 0.070 (ratio 3.998)
+R_H from 1 T to 60 T: -2.8813e-10 to -2.8813e-10 m³/C

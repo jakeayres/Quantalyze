@@ -512,8 +512,9 @@ def test_package_layout():
 
 
 @pytest.mark.parametrize("case", ["circle", "fourfold"])
-def test_fermi_surface_output_unchanged(case):
-    """Output from the pre-package boltzmann.py, recorded before the move."""
+def test_fermi_surface_geometry_unchanged(case):
+    """FermiSurface's area and density match the pre-package boltzmann.py. (Its conductivity
+    changed on purpose when it moved to the exact solver: see the legacy tests.)"""
     data = json.loads(SNAPSHOT.read_text())["cases"][case]
     fs = bz.FermiSurface(
         np.array(data["theta"]),
@@ -522,12 +523,6 @@ def test_fermi_surface_output_unchanged(case):
         np.array(data["relaxation_time"]),
         data["c_axis_length"],
     )
-    for field, expected in zip(data["fields"], data["sigma_xx_xy_yx_yy"]):
-        actual = np.array(fs.calculate_conductivity(field))
-        expected = np.array(expected)
-        error = np.max(np.abs(actual - expected)) / np.max(np.abs(expected))
-        print(f"{case}, B = {field} T: max |d sigma| / max |sigma| = {error:.2e}")
-        assert error <= 1e-12
     assert fs.fermi_area() == pytest.approx(data["fermi_area"], rel=1e-14)
     assert fs.carrier_density() == pytest.approx(data["carrier_density"], rel=1e-14)
 

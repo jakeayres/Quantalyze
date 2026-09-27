@@ -1,349 +1,90 @@
+"""`FermiSurface`: the original polar-form interface, now running on the exact solver (private)."""
+from __future__ import annotations
 
-from ...core.constants import HBAR, ELEMENTARY_CHARGE
+import warnings
+
 import numpy as np
-from numba import njit
+import pandas as pd
 
-"""
-Examples:
-    >>> import quantalyze as qz
-    >>> theta = np.linspace(0, 2*np.pi, 100)
-    >>> fermi_wavevector = np.ones_like(theta) * 1e10  # Example Fermi wavevector
-    >>> effective_mass = np.ones_like(theta) * electron_mass  # Example effective mass
-    >>> relaxation_time = np.ones_like(theta) * 1e-14  # Example relaxation time
-    >>> c_axis_length = 1e-9  # Example c-axis length
-    >>>  
-    >>> fermi_surface = qz.FermiSurface(theta, fermi_wavevector, effective_mass, relaxation_time, c_axis_length)
-    >>> magnetic_field = 1.0  # Example magnetic field in Tesla
-    >>> sxx, sxy, syx, syy = fermi_surface.calculate_conductivity(magnetic_field)
-    >>> rxx = sxx / (sxx * syy - sxy * syx)
-
-"""
-
-@njit
-def _periodic_quadratic_interpolation(theta_array, value_array, theta):
-    """ Quadratic interpolation centered around theta (one point before and one point after)
-    Does assume equally spaced theta_array, and does assume that theta_array is periodic and
-    covers the range [0, 2*pi].
-    """
-    L = np.pi * 2
-    angle = theta % L
-
-    # Find index
-    dtheta = theta_array[1] - theta_array[0]
-    index_0 = int(angle/dtheta)
-    index_minus_1 = (index_0 - 1) % len(theta_array)
-    index_plus_1 = (index_0 + 1) % len(theta_array)
-
-    # Get the three points for interpolation
-    theta_0 = theta_array[index_0]
-    theta_minus_1 = theta_array[index_minus_1]
-    theta_plus_1 = theta_array[index_plus_1]
-
-    value_0 = value_array[index_0]
-    value_minus_1 = value_array[index_minus_1]
-    value_plus_1 = value_array[index_plus_1]
-
-    # Quadratic interpolation
-    a = (value_plus_1 - 2*value_0 + value_minus_1) / (2 * dtheta**2)
-    b = (value_plus_1 - value_minus_1) / (2 * dtheta)
-    c = value_0
-
-    return a * (angle - theta_0)**2 + b * (angle - theta_0) + c
+from ...core.constants import ELEMENTARY_CHARGE, HBAR
+from ._response import conductivity_tensor
 
 
-@njit
-def _calculate_zeta_array(theta_array, fermi_wavevector_array):
-    """ Use quadratic interpolation to calculate the zeta angle for each theta in the array,
-    based on the fermi wavevector array. Take a dtheta that is 100x smaller than the spacing
-    of the theta_array using quadratic interpolation to ensure accurate numerical differentiation.
-    """
-    zeta_array = np.empty_like(theta_array, dtype=np.float64)
-    for i in range(len(theta_array)):
-        dtheta_plus = theta_array[i] + (theta_array[1] - theta_array[0]) / 100
-        dtheta_minus = theta_array[i] - (theta_array[1] - theta_array[0]) / 100
-        kf_plus = _periodic_quadratic_interpolation(theta_array, fermi_wavevector_array, dtheta_plus)
-        kf_minus = _periodic_quadratic_interpolation(theta_array, fermi_wavevector_array, dtheta_minus)
-        ln_kf_plus = np.log(kf_plus)
-        ln_kf_minus = np.log(kf_minus)
-        d_lnkf_dtheta = (ln_kf_plus - ln_kf_minus) / (dtheta_plus - dtheta_minus)
-        zeta_array[i] = np.arctan(d_lnkf_dtheta)
-    return zeta_array
-
-
-
-@njit
-def _calculate_exponential_damping_matrix(
-    theta_array,
-    phi_array,
-    omega_c_tau_array,
-    points=150,
-    ):
-    damping_exponent_matrix = np.empty((len(theta_array), len(phi_array)), dtype=np.float64)
-    for i in range(len(theta_array)):
-        for j in range(len(phi_array)):
-            start = theta_array[i] - phi_array[j]
-            end = theta_array[i]
-            angles = np.linspace(start, end, points)
-
-            integrand = np.empty_like(angles, dtype=np.float64)
-            for k in range(points):
-                # Use quadratic interpolation to get omega_c_tau at the angle angles[k]
-                omega_c_tau = _periodic_quadratic_interpolation(theta_array, omega_c_tau_array, angles[k])
-                integrand[k] = 1.0 / omega_c_tau
-            integral = 0.0
-            for k in range(points-1):
-                integral += 0.5 * (integrand[k] + integrand[k+1]) * (angles[k+1] - angles[k])
-            damping_exponent_matrix[i, j] = integral
-    exponential_damping_matrix = np.exp(-damping_exponent_matrix)
-    return exponential_damping_matrix
-
-
-@njit
-def _bilinear_integration(
-    theta,
-    phi,
-    vx_theta,
-    vy_theta,
-    wc_theta,
-    vx_theta_phi,
-    vy_theta_phi,
-    wc_theta_phi,
-    exponential_damping_matrix,
-    field,
-    c_axis_length,
-    ):
-
-    # Main integration loops
-    xx_integral = 0.0
-    xy_integral = 0.0
-    yx_integral = 0.0
-    yy_integral = 0.0
-
-    for i in range(len(theta) - 1):
-        dtheta = theta[i+1] - theta[i]
-        vx_theta_i = vx_theta[i]
-        vy_theta_i = vy_theta[i]
-        vx_theta_i_plus_1 = vx_theta[i+1]
-        vy_theta_i_plus_1 = vy_theta[i+1]
-        wc_theta_i = wc_theta[i]
-        wc_theta_i_plus_1 = wc_theta[i + 1]
-
-        for j in range(len(phi) - 1):
-            dphi = phi[j+1] - phi[j]
-           
-            # Bilinear interpolation of the Vx.Vx integrand
-            f00_xx = vx_theta_i         * vx_theta_phi[i, j]   * exponential_damping_matrix[i, j]         / (wc_theta_i * wc_theta_phi[i, j])
-            f01_xx = vx_theta_i         * vx_theta_phi[i, j+1] * exponential_damping_matrix[i, j+1]       / (wc_theta_i * wc_theta_phi[i, j+1])
-            f10_xx = vx_theta_i_plus_1  * vx_theta_phi[i+1, j] * exponential_damping_matrix[i+1, j]       / (wc_theta_i_plus_1 * wc_theta_phi[i+1, j])
-            f11_xx = vx_theta_i_plus_1  * vx_theta_phi[i+1, j+1] * exponential_damping_matrix[i+1, j+1]   / (wc_theta_i_plus_1 * wc_theta_phi[i+1, j+1])
-            avg_xx = 0.25 * (f00_xx + f01_xx + f10_xx + f11_xx)
-
-            # Bilinear interpolation of the Vx.Vy integrand
-            f00_xy = vx_theta_i         * vy_theta_phi[i, j]     * exponential_damping_matrix[i, j]       / (wc_theta_i * wc_theta_phi[i, j])
-            f01_xy = vx_theta_i         * vy_theta_phi[i, j+1]   * exponential_damping_matrix[i, j+1]     / (wc_theta_i * wc_theta_phi[i, j+1])
-            f10_xy = vx_theta_i_plus_1  * vy_theta_phi[i+1, j]   * exponential_damping_matrix[i+1, j]     / (wc_theta_i_plus_1 * wc_theta_phi[i+1, j])
-            f11_xy = vx_theta_i_plus_1  * vy_theta_phi[i+1, j+1] * exponential_damping_matrix[i+1, j+1]   / (wc_theta_i_plus_1 * wc_theta_phi[i+1, j+1])
-            avg_xy = 0.25 * (f00_xy + f01_xy + f10_xy + f11_xy)
-
-            # Bilinear interpolation of the Vy.Vx integrand
-            f00_yx = vy_theta_i         * vx_theta_phi[i, j]     * exponential_damping_matrix[i, j]       / (wc_theta_i * wc_theta_phi[i, j])
-            f01_yx = vy_theta_i         * vx_theta_phi[i, j+1]   * exponential_damping_matrix[i, j+1]     / (wc_theta_i * wc_theta_phi[i, j+1])
-            f10_yx = vy_theta_i_plus_1  * vx_theta_phi[i+1, j]   * exponential_damping_matrix[i+1, j]     / (wc_theta_i_plus_1 * wc_theta_phi[i+1, j])
-            f11_yx = vy_theta_i_plus_1  * vx_theta_phi[i+1, j+1] * exponential_damping_matrix[i+1, j+1]   / (wc_theta_i_plus_1 * wc_theta_phi[i+1, j+1])
-            avg_yx = 0.25 * (f00_yx + f01_yx + f10_yx + f11_yx)
-
-            # Bilinear interpolation of the Vy.Vy integrand
-            f00_yy = vy_theta_i         * vy_theta_phi[i, j]     * exponential_damping_matrix[i, j]       / (wc_theta_i * wc_theta_phi[i, j])
-            f01_yy = vy_theta_i         * vy_theta_phi[i, j+1]   * exponential_damping_matrix[i, j+1]     / (wc_theta_i * wc_theta_phi[i, j+1])
-            f10_yy = vy_theta_i_plus_1  * vy_theta_phi[i+1, j]   * exponential_damping_matrix[i+1, j]     / (wc_theta_i_plus_1 * wc_theta_phi[i+1, j])
-            f11_yy = vy_theta_i_plus_1  * vy_theta_phi[i+1, j+1] * exponential_damping_matrix[i+1, j+1]   / (wc_theta_i_plus_1 * wc_theta_phi[i+1, j+1])
-            avg_yy = 0.25 * (f00_yy + f01_yy + f10_yy + f11_yy)
-
-            xx_integral += avg_xx * dtheta * dphi
-            xy_integral += avg_xy * dtheta * dphi
-            yx_integral += avg_yx * dtheta * dphi
-            yy_integral += avg_yy * dtheta * dphi
-
-    const = ELEMENTARY_CHARGE**3 * field / (2 * np.pi**2 * HBAR**2 * c_axis_length)
-    return (xx_integral * const, xy_integral * const, yx_integral * const, yy_integral * const)
-
-
-
-@njit
-def _compute_conductivity_from_arrays(
-    theta,
-    fermi_wavevector,
-    effective_mass,
-    relaxation_time,
-    c_axis_length,
-    magnetic_field,
-    start_phi=1e-9, # start of phi integration
-    end_phi=2*np.pi, # end of phi integration
-    phi_points=250, # number of points for phi integration
-    exponent_points=150, # number of points for exponent integration
-    ):
-
-    """
-    Builds a conductivity function from precomputed arrays of the input functions.
-    This is useful for cases where the input functions are expensive to compute
-    or for which no simple analytical form is available e.g. from ab initio calculation
-    or tight binding models. The arrays should be defined on the same grid of theta values
-    The conductivity function will interpolate the input arrays to compute the conductivity
-    at any given theta.
-
-    Args:
-        theta: array of theta values (in radians) for which the input functions are defined.
-        fermi_wavevector: array of fermi wavevector values for each theta.
-        effective_mass: array of effective mass values for each theta.
-        relaxation_time: array of relaxation time values for each theta.
-        c_axis_length: length of the c-axis (in meters).
-        magnetic_field: magnetic field strength (in Tesla).
-        start_phi: start of phi integration (in radians).
-        end_phi: end of phi integration (in radians).
-        phi_points: number of points for phi integration.
-        exponent_points: number of points for exponent integration.
-
-    Returns:
-        sxx, sxy, syx, syy: conductivity tensor components.
-    """
-
-    # Set up the phi array for integration:
-    # Geometric spacing is used to capture the rapid decay of the exponential 
-    # damping at small phi values
-    phi = np.geomspace(start_phi, end_phi, phi_points)
-
-    # Precompute omega_c and omega_c_tau for all theta values
-    wc_theta = ELEMENTARY_CHARGE * magnetic_field / effective_mass
-    omega_c_tau = wc_theta * relaxation_time
-
-    # Precompute the fermi velocity components for all theta values
-    zeta = _calculate_zeta_array(theta, fermi_wavevector)
-    vx_theta = HBAR * fermi_wavevector * np.cos(theta - zeta) / effective_mass
-    vy_theta = HBAR * fermi_wavevector * np.sin(theta - zeta) / effective_mass
-
-    # Precompute the fermi velocity components for all theta - phi values
-    # and omega_c for all theta - phi values
-    vx_theta_phi = np.empty((len(theta), len(phi)), dtype=np.float64)
-    vy_theta_phi = np.empty((len(theta), len(phi)), dtype=np.float64)
-    wc_theta_phi = np.empty((len(theta), len(phi)), dtype=np.float64)
-    for i in range(len(theta)):
-        for j in range(len(phi)):
-            angle = theta[i] - phi[j]
-            vx_theta_phi[i, j] = _periodic_quadratic_interpolation(theta, vx_theta, angle)
-            vy_theta_phi[i, j] = _periodic_quadratic_interpolation(theta, vy_theta, angle)
-            wc_theta_phi[i, j] = _periodic_quadratic_interpolation(theta, wc_theta, angle)
-
-    # Precompute the damping exponent for all theta and phi values
-    exponential_damping_matrix = _calculate_exponential_damping_matrix(
-        theta,
-        phi,
-        omega_c_tau,
-        points=exponent_points,
-        )
-    
-    # Perform the bilinear integration over theta and phi to compute the 
-    # conductivity tensor components.
-    sxx, sxy, syx, syy = _bilinear_integration(
-        theta,
-        phi,
-        vx_theta,
-        vy_theta,
-        wc_theta,
-        vx_theta_phi,
-        vy_theta_phi,
-        wc_theta_phi,
-        exponential_damping_matrix,
-        magnetic_field,
-        c_axis_length,
-    )
-
-    return sxx, sxy, syx, syy
-
+def _periodic_derivative(theta: np.ndarray, values: np.ndarray) -> np.ndarray:
+    """d(values)/dθ on a periodic, increasing but possibly uneven θ grid (3-point, O(h²))."""
+    before = np.mod(theta - np.roll(theta, 1), 2 * np.pi)  # h₋, (N,)
+    after = np.mod(np.roll(theta, -1) - theta, 2 * np.pi)  # h₊, (N,)
+    previous, following = np.roll(values, 1), np.roll(values, -1)
+    return (before**2 * following - after**2 * previous + (after**2 - before**2) * values) / (
+        before * after * (before + after))
 
 
 class FermiSurface:
+    """A single electron-like Fermi pocket in polar form, k_F(θ), with m*(θ) and τ(θ).
 
-    """
-    Class to represent a Fermi surface and compute conductivity.
-    
+    The pocket is the contour k = k_F(θ)(cos θ, sin θ). Its group velocity has magnitude
+    ħk_F/m* and points along the outward normal, and `calculate_conductivity` passes it to
+    `bz.conductivity` with `layer_spacing = c_axis_length`.
+
+    Changed in the exact-solver release: conductivities now come from the exact O(N)
+    Chambers solver, so the numbers differ from earlier versions. Those truncated the
+    history integral after one orbit and took dθ/dt = eB/m*(θ), so they were wrong for
+    ω_cτ ≳ 1 (σ_xx on a circle was 33% too low at ω_cτ = 5). The integration options of
+    `calculate_conductivity` no longer have any effect.
+
+    Args:
+        theta: Polar angles θ of the nodes (rad), increasing, covering one turn. A final
+            point at θ₀ + 2π that repeats the first is allowed.
+        fermi_wavevector: k_F at each θ (m⁻¹).
+        effective_mass: m* at each θ (kg), or one value for all.
+        relaxation_time: τ at each θ (s), or one value for all.
+        c_axis_length: Interlayer spacing used as `layer_spacing` (m). For a body-centred
+            cell this is c/2, not the lattice parameter c.
+
     Examples:
-        >>> import quantalyze as qz
-        >>> theta = np.linspace(0, 2*np.pi, 100)
-        >>> fermi_wavevector = np.ones_like(theta) * 1e10  # Example Fermi wavevector
-        >>> effective_mass = np.ones_like(theta) * electron_mass  # Example effective mass
-        >>> relaxation_time = np.ones_like(theta) * 1e-14  # Example relaxation time
-        >>> c_axis_length = 1e-9  # Example c-axis length
-        >>>  
-        >>> fermi_surface = qz.FermiSurface(theta, fermi_wavevector, effective_mass, relaxation_time, c_axis_length)
-        >>> magnetic_field = 1.0  # Example magnetic field in Tesla
-        >>> sxx, sxy, syx, syy = fermi_surface.calculate_conductivity(magnetic_field)
+        >>> import numpy as np
+        >>> from quantalyze.beta import boltzmann as bz
+        >>> from quantalyze.core.constants import ELECTRON_MASS
+        >>> theta = np.linspace(0, 2 * np.pi, 512, endpoint=False)
+        >>> fs = bz.FermiSurface(theta, np.full(512, 7e9), ELECTRON_MASS, 1e-13, 1e-9)
+        >>> sxx, sxy, syx, syy = fs.calculate_conductivity(10.0)
         >>> rxx = sxx / (sxx * syy - sxy * syx)
-    
     """
 
-
-    def __init__(
-        self,
-        theta,
-        fermi_wavevector,
-        effective_mass,
-        relaxation_time,
-        c_axis_length,
-        ):
+    def __init__(self, theta, fermi_wavevector, effective_mass, relaxation_time, c_axis_length):
+        theta = np.asarray(theta, dtype=np.float64)
         self.theta = theta
-        self.fermi_wavevector = fermi_wavevector
-        self.effective_mass = effective_mass
-        self.relaxation_time = relaxation_time
+        self.fermi_wavevector = np.broadcast_to(np.asarray(fermi_wavevector, dtype=np.float64), theta.shape)
+        self.effective_mass = np.broadcast_to(np.asarray(effective_mass, dtype=np.float64), theta.shape)
+        self.relaxation_time = np.broadcast_to(np.asarray(relaxation_time, dtype=np.float64), theta.shape)
         self.c_axis_length = c_axis_length
 
-
     def fermi_wavevector_x(self):
-        """
-        Compute the x-component of the Fermi wavevector for each theta value.
-        """
+        """Compute the x-component of the Fermi wavevector for each theta value."""
         return self.fermi_wavevector * np.cos(self.theta)
 
-
     def fermi_wavevector_y(self):
-        """
-        Compute the y-component of the Fermi wavevector for each theta value.
-        """
+        """Compute the y-component of the Fermi wavevector for each theta value."""
         return self.fermi_wavevector * np.sin(self.theta)
 
-
     def reciprocal_lattice_vector(self):
-        """
-        Compute the reciprocal c-axis lattice vector.
-        """
+        """Compute the reciprocal c-axis lattice vector."""
         return 2 * np.pi / self.c_axis_length
 
-
     def cylotron_frequency(self, magnetic_field):
-        """
-        Compute the local cyclotron frequency for a given magnetic field at each theta value.
-        """
+        """Compute the local cyclotron frequency for a given magnetic field at each theta value."""
         return ELEMENTARY_CHARGE * magnetic_field / self.effective_mass
 
-
     def omega_c_tau(self, magnetic_field):
-        """
-        Compute the product of the cyclotron frequency and relaxation time for a given magnetic field at each theta value.
-        """
+        """Compute ω_cτ for a given magnetic field at each theta value."""
         return self.cylotron_frequency(magnetic_field) * self.relaxation_time
 
-
     def mean_free_path(self):
-        """
-        Calculate the mean free path of electrons on the Fermi surface.
-        """
+        """Calculate the mean free path ħk_Fτ/m* at each theta value (m)."""
         return HBAR * self.fermi_wavevector * self.relaxation_time / self.effective_mass
 
-
     def _integrate_fermi_wavevector(self):
-        """
-        Integrate using trapezoidal rule and quadratic interpolation between points.
-        This is used to compute the Fermi volume and the average effective mass.
-        """
+        """Area ½∮k_F² dθ by the trapezoid rule over the given θ points."""
         n = len(self.theta)
         if n < 2:
             return 0.0
@@ -359,69 +100,84 @@ class FermiSurface:
             area += 0.25 * (r1**2 + r2**2) * dtheta
         return area
 
-
     def fermi_area(self):
-        """
-        Compute the area of the Fermi surface in k-space by integrating the Fermi wavevector over theta.
-        """
+        """Compute the area of the Fermi surface in k-space by integrating the Fermi wavevector over theta."""
         return self._integrate_fermi_wavevector()
 
-
     def fermi_volume(self):
-        """
-        Calculate the volume of the Fermi surface in k-space by integrating the Fermi wavevector 
-        and multiplying by the reciprocal lattice vector.
-        """
+        """Fermi area times the reciprocal lattice vector 2π/c (m⁻³)."""
         return self._integrate_fermi_wavevector() * self.reciprocal_lattice_vector()
 
-
     def carrier_density(self):
-        """
-        Calculate the carrier density based on the Fermi volume.
-        """
+        """Carrier density 2 × Fermi volume / (2π)³ (m⁻³)."""
         return self.fermi_volume() / (2 * np.pi)**3 * 2
-    
+
+    def _distinct_nodes(self):
+        """θ, k_F, m*, τ without a final point that repeats the first (θ₀ + 2π)."""
+        theta = self.theta
+        keep = slice(None)
+        if theta.size > 1 and np.isclose(np.mod(theta[-1] - theta[0], 2 * np.pi), 0.0, atol=1e-12) \
+                and np.isclose(self.fermi_wavevector[-1], self.fermi_wavevector[0], rtol=1e-12):
+            keep = slice(0, -1)
+        return (theta[keep], self.fermi_wavevector[keep], self.effective_mass[keep], self.relaxation_time[keep])
 
     def calculate_normal_vectors(self):
-        """
-        Calculate the normal vectors to the Fermi surface at each theta value.
-        """
-        zeta = _calculate_zeta_array(self.theta, self.fermi_wavevector)
-        normal_x = np.cos(self.theta - zeta)
-        normal_y = np.sin(self.theta - zeta)
-        return normal_x, normal_y
+        """Unit outward normals (n_x, n_y) to the Fermi contour at each theta value."""
+        theta, k_fermi, _, _ = self._distinct_nodes()
+        dk_fermi = _periodic_derivative(theta, k_fermi)  # dk_F/dθ
+        # The tangent is k_F′ r̂ + k_F θ̂, so the outward normal is k_F r̂ − k_F′ θ̂.
+        radial, angular = k_fermi, -dk_fermi
+        norm = np.hypot(radial, angular)
+        nx = (radial * np.cos(theta) - angular * np.sin(theta)) / norm
+        ny = (radial * np.sin(theta) + angular * np.cos(theta)) / norm
+        if theta.size < self.theta.size:  # give the repeated closing point its normal back
+            nx, ny = np.append(nx, nx[0]), np.append(ny, ny[0])
+        return nx, ny
 
+    def contour(self) -> pd.DataFrame:
+        """The pocket as a contour DataFrame (kx, ky, vx, vy, tau), for use with `bz.conductivity`.
 
-    def calculate_conductivity(
-        self,
-        magnetic_field,
-        start_phi=1e-9, # start of phi integration
-        end_phi=2*np.pi, # end of phi integration
-        phi_points=250, # number of points for phi integration
-        exponent_points=150, # number of points for exponent integration
-    ):
-        """
-        Calculate the conductivity tensor components for the Fermi surface given a magnetic field.
-        
-        Args:
-            magnetic_field: Magnetic field strength (in Tesla).
-            start_phi: Start of phi integration (in radians).
-            end_phi: End of phi integration (in radians).
-            phi_points: Number of points for phi integration.
-            exponent_points: Number of points for exponent integration.
-            
         Returns:
-            sxx, sxy, syx, syy: Conductivity tensor components.
+            DataFrame with columns kx, ky (m⁻¹), vx, vy (m/s) and tau (s), one row per
+            distinct node, with v = ħk_F/m* along the outward normal.
         """
-        return _compute_conductivity_from_arrays(
-            self.theta,
-            self.fermi_wavevector,
-            self.effective_mass,
-            self.relaxation_time,
-            self.c_axis_length,
-            magnetic_field=magnetic_field,
-            start_phi=start_phi,
-            end_phi=end_phi,
-            phi_points=phi_points,
-            exponent_points=exponent_points,
-        )
+        theta, k_fermi, mass, tau = self._distinct_nodes()
+        nx, ny = self.calculate_normal_vectors()
+        nx, ny = nx[:theta.size], ny[:theta.size]
+        speed = HBAR * k_fermi / mass
+        return pd.DataFrame({
+            "kx": k_fermi * np.cos(theta),
+            "ky": k_fermi * np.sin(theta),
+            "vx": speed * nx,
+            "vy": speed * ny,
+            "tau": np.asarray(tau, dtype=np.float64),
+        })
+
+    def calculate_conductivity(self, magnetic_field, start_phi=None, end_phi=None, phi_points=None,
+                               exponent_points=None):
+        """Conductivity tensor components at one or more fields (S/m).
+
+        Args:
+            magnetic_field: Magnetic field B along ẑ (T), a float or array-like.
+            start_phi: No longer used; kept so existing calls still work.
+            end_phi: No longer used.
+            phi_points: No longer used.
+            exponent_points: No longer used.
+
+        Returns:
+            (sxx, sxy, syx, syy): floats for a float field, arrays for an array of fields.
+        """
+        if any(option is not None for option in (start_phi, end_phi, phi_points, exponent_points)):
+            warnings.warn(
+                "start_phi, end_phi, phi_points and exponent_points no longer have any effect: "
+                "the conductivity is now computed exactly",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        df = self.contour()
+        sigma = conductivity_tensor(df["kx"], df["ky"], df["vx"], df["vy"], df["tau"], magnetic_field,
+                                    layer_spacing=self.c_axis_length)  # (nB, 2, 2)
+        components = (sigma[:, 0, 0], sigma[:, 0, 1], sigma[:, 1, 0], sigma[:, 1, 1])
+        if np.ndim(magnetic_field) == 0:
+            return tuple(float(c[0]) for c in components)
+        return components

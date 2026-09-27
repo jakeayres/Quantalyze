@@ -1,0 +1,2 @@
+low field:  R_H = 1.244 / nq,  MR = 1.2e-03
+high field: R_H = 1.000 / nq,  MR = 0.250
