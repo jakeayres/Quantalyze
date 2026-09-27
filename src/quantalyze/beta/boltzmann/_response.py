@@ -22,12 +22,16 @@ from ._contour import enclosed_area, prepare_contour
 _BACKENDS = ("python", "numba")
 
 
-def _orbit_sums(backend, s, gamma, vx, vy, field):
+def _orbit_sums_both(backend, forward, backward, field, both):
+    """Orbit sums on the forward and (if `both`) the reversed orbit, shape (2, nB, 2, 2)."""
     if backend == "python":
-        return _kernel_py.orbit_sums(s, gamma, vx, vy, field)
-    # Contiguous float64 so the compiled kernel sees one array type (the reversed orbit is a view).
-    arrays = (np.ascontiguousarray(a, dtype=np.float64) for a in (s, gamma, vx, vy, field))
-    return _kernel.orbit_sums(*arrays)
+        reverse = _kernel_py.orbit_sums(*backward, field) if both else np.full((field.size, 2, 2), np.nan)
+        return np.stack([_kernel_py.orbit_sums(*forward, field), reverse])
+    # One compiled call does both: the reversed orbit shares every segment's weights.
+    arrays = [np.ascontiguousarray(a, dtype=np.float64) for a in (*forward, field)]
+    if both:
+        return _kernel.orbit_sums_both(*arrays)
+    return np.stack([_kernel.orbit_sums(*arrays), np.full((field.size, 2, 2), np.nan)])
 
 
 def _zero_field_sums(s, gamma, vx, vy):
@@ -104,25 +108,24 @@ def conductivity_tensor(
     order = np.roll(np.arange(contour.s.size)[::-1], 1)  # node 0, N−1, …, 1
     backward = (contour.s[::-1], contour.gamma[::-1], contour.vx[order], contour.vy[order])
 
+    # Each distinct |B| is computed once, on both orientations; B = 0 has its own branch.
     magnitude = np.abs(fields)
-    nonzero = magnitude > 0
-    unique = np.unique(magnitude[nonzero])  # (nU,)
-    need_forward = symmetrize or np.any(fields > 0)
-    need_backward = symmetrize or np.any(fields < 0)
-    empty = np.empty((0, 2, 2))
-    sums_forward = _orbit_sums(backend, *forward, unique) if unique.size and need_forward else empty
-    sums_backward = _orbit_sums(backend, *backward, unique) if unique.size and need_backward else empty
+    unique, index = np.unique(magnitude, return_inverse=True)  # (nU,), (nB,)
+    sums = np.empty((2, unique.size, 2, 2))  # [orientation, |B|]
+    nonzero = unique > 0
+    if np.any(nonzero):
+        both = symmetrize or bool(np.any(fields < 0))  # the reversed orbit is only sometimes needed
+        sums[:, nonzero] = _orbit_sums_both(backend, forward, backward, unique[nonzero], both)
+    if not np.all(nonzero):  # unique is sorted, so B = 0 comes first
+        sums[0, 0] = _zero_field_sums(*forward)
+        sums[1, 0] = _zero_field_sums(*backward)
 
-    result = np.empty((fields.size, 2, 2))
-    for index, b in enumerate(fields):
-        if b == 0:
-            along = _zero_field_sums(*forward)
-            against = _zero_field_sums(*backward) if symmetrize else None
-        else:
-            u = np.searchsorted(unique, abs(b))
-            along = sums_forward[u] if b > 0 else sums_backward[u]
-            against = (sums_backward[u] if b > 0 else sums_forward[u]) if symmetrize else None
-        result[index] = along if against is None else 0.5 * (along + against.T)
+    along = np.where(fields[:, None, None] >= 0, sums[0, index], sums[1, index])  # σ(B), (nB, 2, 2)
+    if symmetrize:
+        against = np.where(fields[:, None, None] >= 0, sums[1, index], sums[0, index])  # σ(−B)
+        result = 0.5 * (along + np.transpose(against, (0, 2, 1)))
+    else:
+        result = along
 
     prefactor = spin_degeneracy * ELEMENTARY_CHARGE**3 / (4 * np.pi**2 * HBAR**2 * layer_spacing)
     return prefactor * result

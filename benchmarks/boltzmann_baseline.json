@@ -1,0 +1,12 @@
+{
+ "machine": "Intel64 Family 6 Model 158 Stepping 10, GenuineIntel, 12 logical CPUs, numba threads 12 (omp layer); Python 3.9.25, numpy 2.0.2, numba 0.60.0",
+ "ms": {
+  "N=256 nB=100 sym": 1.325400000000032,
+  "N=512 nB=1000 sym": 4.735600000000062,
+  "N=1024 nB=1000 sym": 8.000400000000019,
+  "N=2048 nB=1000 sym": 14.5508999999997,
+  "N=1024 nB=2000 sym": 14.775299999999714,
+  "N=1024 nB=1000 unsym": 5.920799999999726,
+  "N=4096 nB=1000 sym": 30.15970000000001
+ }
+}

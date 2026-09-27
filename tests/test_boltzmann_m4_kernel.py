@@ -87,6 +87,23 @@ def test_matches_the_numpy_kernel(name):
     assert worst <= 1e-12
 
 
+@pytest.mark.parametrize("name", CONTOURS)
+def test_both_orientations_kernel_matches_the_numpy_kernel(name):
+    """orbit_sums_both shares each segment's weights between the orbit and its reverse;
+    each half must still match the NumPy kernel run on that orientation."""
+    df, mass = CONTOURS[name]
+    fields = X * mass / (E * TAU)
+    c = prepare_contour(*arrays(df))
+    order = np.roll(np.arange(c.s.size)[::-1], 1)
+    both = _kernel.orbit_sums_both(c.s, c.gamma, c.vx, c.vy, fields)
+    forward = _kernel_py.orbit_sums(c.s, c.gamma, c.vx, c.vy, fields)
+    backward = _kernel_py.orbit_sums(c.s[::-1], c.gamma[::-1], c.vx[order], c.vy[order], fields)
+    worst = max(per_field_error(both[0], forward).max(), per_field_error(both[1], backward).max())
+    print(f"{name}: max per-field relative difference from NumPy, both orientations: {worst:.1e}")
+    assert worst <= 1e-12
+    np.testing.assert_array_equal(both[0], _kernel.orbit_sums(c.s, c.gamma, c.vx, c.vy, fields))
+
+
 @pytest.mark.parametrize("symmetrize", [True, False])
 def test_conductivity_tensor_backends_agree(symmetrize):
     """Through the full array layer: ±B, B = 0, symmetrised or not, every contour."""
@@ -122,16 +139,17 @@ def test_bitwise_identical_for_any_thread_count():
 def _fresh_ir():
     """LLVM IR of a fresh compile of the kernel with its own options. (A dispatcher loaded
     from numba's on-disk cache cannot be inspected: it returns invalid IR with a warning.)"""
-    options = {k: v for k, v in _kernel.orbit_sums.targetoptions.items() if k not in ("cache", "nopython")}
-    fresh = numba.njit(**options)(_kernel.orbit_sums.py_func)
+    kernel = _kernel._orbit_sums_blocks
+    options = {k: v for k, v in kernel.targetoptions.items() if k not in ("cache", "nopython")}
+    fresh = numba.njit(**options)(kernel.py_func)
     s = np.full(64, 1e-14)
-    fresh(s, s * 1e27, np.ones(64), np.ones(64), np.array([1.0, 2.0]))
+    fresh(s, s * 1e27, np.ones(64), np.ones(64), np.array([1.0, 2.0]), 2, True)
     return "\n".join(fresh.inspect_llvm().values())
 
 
 def test_compiled_without_fastmath():
     """No reassociation or other fast-math flags anywhere in the compiled kernel (φ included)."""
-    for dispatcher in (_kernel.orbit_sums, _kernel.phi):
+    for dispatcher in (_kernel._orbit_sums_blocks, _kernel._segment_weights, _kernel._sweep, _kernel.phi):
         assert not dispatcher.targetoptions.get("fastmath", False)
     ir = _fresh_ir()
     assert "expm1" in ir  # φ is compiled into this IR, so it is covered too
