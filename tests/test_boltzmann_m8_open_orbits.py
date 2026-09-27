@@ -5,6 +5,7 @@ ends at the first node shifted by G. Its drift is physical and is never removed.
 warped sheet must converge to the brute-force reference as O(N⁻²).
 """
 import numpy as np
+import pandas as pd
 import pytest
 
 from quantalyze.beta import boltzmann as bz
@@ -77,7 +78,7 @@ def test_order_start_and_sign_of_g_do_not_matter():
         "reversed": (df.iloc[::-1], PERIOD),
         "minus G": (df, (0.0, -G)),
         "reversed, minus G": (df.iloc[::-1], (0.0, -G)),
-        "repeated end point": (__import__("pandas").concat([df, closing]), PERIOD),
+        "repeated end point": (pd.concat([df, closing]), PERIOD),
         "rotated start": (rolled, PERIOD),
     }
     for label, (variant, period) in variants.items():

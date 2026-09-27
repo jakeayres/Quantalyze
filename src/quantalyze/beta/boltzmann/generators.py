@@ -260,6 +260,8 @@ def from_dispersion(
     """
     cx, cy = (float(c) for c in center)
     energy_centre = float(energy(np.array(cx), np.array(cy)))
+    if not np.isfinite(energy_centre):
+        raise ValueError(f"energy is {energy_centre} at the pocket centre; it must be finite there")
     if energy_centre == 0:
         raise ValueError("the Fermi level passes through the pocket centre")
 
@@ -270,7 +272,10 @@ def from_dispersion(
         c, s = np.cos(angle), np.sin(angle)
         r_max = float(max_radius(angle)) if callable(max_radius) else float(max_radius)
         along_ray = energy(cx + samples * r_max * c, cy + samples * r_max * s)  # (64,)
-        crossings = np.count_nonzero(np.diff(np.sign(np.concatenate(([energy_centre], along_ray)))))
+        signs = np.sign(np.concatenate(([energy_centre], along_ray)))
+        # A sample exactly on the Fermi surface (ε = 0) is itself the crossing: skip it
+        # rather than count a change into and out of zero.
+        crossings = np.count_nonzero(np.diff(signs[signs != 0]))
         if crossings == 0:
             raise ValueError(
                 f"no Fermi crossing within max_radius of the centre at φ = {angle:.3f} rad: "
@@ -285,6 +290,69 @@ def from_dispersion(
     ky = cy + radius * np.sin(phi)
     grad_x, grad_y = gradient(kx, ky)
     return _frame(kx, ky, np.asarray(grad_x) / HBAR, np.asarray(grad_y) / HBAR, _tau_column(tau, phi))
+
+
+def from_dispersion_3d(
+    n_points: int,
+    n_kz: int,
+    *,
+    energy: Callable[[np.ndarray, np.ndarray, float], np.ndarray],
+    gradient: Callable[[np.ndarray, np.ndarray, float], Tuple[np.ndarray, np.ndarray, np.ndarray]],
+    tau: Tau,
+    max_radius: Union[float, Callable[[float], float]],
+    layer_spacing: float,
+    center: Sequence[float] = (0.0, 0.0),
+) -> pd.DataFrame:
+    """A k_z-warped Fermi surface as slices: `from_dispersion` at evenly spaced k_z.
+
+    The slices sit at k_z = −π/d + 2πj/(N_z d), j = 0…N_z−1, one period of k_z, as
+    `bz.conductivity(..., kz="kz")` expects. With B along ẑ each carrier stays in its
+    slice, carrying the out-of-plane velocity v_z = (1/ħ) ∂ε/∂k_z with it.
+
+    Args:
+        n_points: Number of nodes N per slice, evenly spaced in polar angle about `center`.
+        n_kz: Number of slices N_z. The k_z average is a periodic trapezoid rule, so a
+            few points per period of the warping are usually enough.
+        energy: Function ε(k_x, k_y, k_z) (J) measured from the Fermi level, vectorised
+            over arrays of k_x, k_y (m⁻¹) at one k_z (m⁻¹).
+        gradient: Function returning (∂ε/∂k_x, ∂ε/∂k_y, ∂ε/∂k_z) (J·m).
+        tau: Relaxation time (s), as a float or a function of the polar angle φ (rad)
+            about `center`.
+        max_radius: How far from the centre to search along each ray (m⁻¹), a float or
+            a function of φ (rad).
+        layer_spacing: Interlayer spacing d (m), which sets the k_z period 2π/d.
+        center: Pocket centre (k_x, k_y) (m⁻¹), the same for every slice.
+
+    Returns:
+        DataFrame with columns kx, ky, kz (m⁻¹), vx, vy, vz (m/s) and tau (s).
+
+    Raises:
+        ValueError: If a slice's pocket is not closed, or not star-shaped, about `center`.
+
+    Examples:
+        >>> import numpy as np
+        >>> from quantalyze.beta import boltzmann as bz
+        >>> from quantalyze.core.constants import ELECTRON_MASS, HBAR
+        >>> c2, tz, d, ef = HBAR**2 / (2 * ELECTRON_MASS), 1e-21, 1e-9, 1.9e-19
+        >>> df = bz.generators.from_dispersion_3d(
+        ...     256, 8, tau=1e-13, max_radius=2e10, layer_spacing=d,
+        ...     energy=lambda kx, ky, kz: c2 * (kx**2 + ky**2) - 2 * tz * np.cos(kz * d) - ef,
+        ...     gradient=lambda kx, ky, kz: (2 * c2 * kx, 2 * c2 * ky, 2 * tz * d * np.sin(kz * d) + 0 * kx))
+    """
+    slices = []
+    for j in range(n_kz):
+        kz = -np.pi / layer_spacing + 2 * np.pi * j / (n_kz * layer_spacing)
+        part = from_dispersion(
+            n_points, tau=tau, max_radius=max_radius, center=center,
+            energy=lambda kx, ky, kz=kz: energy(kx, ky, kz),
+            gradient=lambda kx, ky, kz=kz: gradient(kx, ky, kz)[:2],
+        )
+        grad_z = np.broadcast_to(np.asarray(gradient(part["kx"].to_numpy(), part["ky"].to_numpy(), kz)[2]),
+                                 (len(part),))
+        part.insert(2, "kz", kz)
+        part.insert(5, "vz", grad_z / HBAR)
+        slices.append(part)
+    return pd.concat(slices, ignore_index=True)
 
 
 def tight_binding(

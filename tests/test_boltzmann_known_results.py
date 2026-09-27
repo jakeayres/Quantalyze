@@ -6,6 +6,7 @@ N = 512, g_s = 2, d = 1 nm and ω_cτ ∈ {0.01, 0.1, 1, 10, 100}. A failure her
 physics bug until proven otherwise: do not loosen a tolerance.
 """
 import numpy as np
+import pandas as pd
 import pytest
 
 from quantalyze.beta import boltzmann as bz
@@ -14,7 +15,7 @@ from quantalyze.beta.boltzmann import generators as gen
 from quantalyze.beta.boltzmann import scattering as sc
 from quantalyze.beta.boltzmann._contour import prepare_contour
 from quantalyze.beta.boltzmann._response import conductivity_tensor
-from quantalyze.core.constants import ELECTRON_MASS, ELEMENTARY_CHARGE
+from quantalyze.core.constants import ELECTRON_MASS, ELEMENTARY_CHARGE, HBAR
 
 E = ELEMENTARY_CHARGE
 N = 512
@@ -329,8 +330,6 @@ def test_k11_flat_open_sheets(backend):
     """K11: two flat sheets at k_x = ±k₀ spanning one period G, v = ±v₀ x̂, constant τ. The
     field moves carriers along the sheet without changing v, so σ is field-independent:
     σ_xx(B) = σ_xx(0) = 2·g_s e²τv₀G/(4π²ħd) at every B, and σ_xy = σ_yy = 0. Tolerance 1e-12."""
-    from quantalyze.core.constants import HBAR
-
     k0, v0, g = 5e9, 2e5, 2 * np.pi / 3.87e-10
     sheets = gen.open_sheets(N, k0=k0, velocity=v0, tau=TAU, period=g)
     x = np.array([0.0, 0.01, 1.0, 100.0, 1e4])
@@ -343,3 +342,41 @@ def test_k11_flat_open_sheets(backend):
     print(f"K11: sigma_xx expected {expected:.8e}, actual {s.sigma_xx.iloc[3]:.8e}, max rel error {xx_error:.1e}; "
           f"max |sigma_xy, sigma_yx, sigma_yy| / sigma_xx = {others:.1e}")
     assert xx_error <= 1e-12 and others <= 1e-12
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_k12a_kz_independent_surface_equals_2d(backend):
+    """K12(a): a surface that does not depend on k_z (identical slices, v_z = 0) gives the 2D
+    result in-plane, and zero for every component involving z. Tolerance 1e-12."""
+    df = fourfold()
+    slices = [df.assign(kz=-np.pi / D + 2 * np.pi * j / (4 * D), vz=0.0) for j in range(4)]
+    layered = pd.concat(slices, ignore_index=True)
+    fields = np.array([-30.0, 0.0, 0.3, 3.0, 30.0])
+    two_d = bz.conductivity(df, fields, layer_spacing=D, backend=backend)
+    three_d = bz.conductivity(layered, fields, layer_spacing=D, kz="kz", backend=backend)
+    s3 = three_d.iloc[:, 1:].to_numpy().reshape(-1, 3, 3)
+    s2 = two_d.iloc[:, 1:].to_numpy().reshape(-1, 2, 2)
+    plane = normwise(s3[:, :2, :2], s2)
+    print(f"K12a: in-plane vs 2D {plane:.1e}; max |z components| {np.max(np.abs(s3[:, 2, :])):.1e}, "
+          f"{np.max(np.abs(s3[:, :, 2])):.1e}")
+    assert plane <= 1e-12 and not np.any(s3[:, 2, :]) and not np.any(s3[:, :, 2])
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_k12b_warping_only_in_kz(backend):
+    """K12(b): ε = ħ²k²/2m − 2t_z cos(k_z d) − E_F warps only along k_z, so v_z is constant on
+    every orbit and the field cannot change it: σ_zz(B) = σ_zz(0) at every B (1e-10), and
+    σ_xz = σ_zx = 0 (1e-10 of √(σ_xx σ_zz))."""
+    c2, tz, ef = HBAR**2 / (2 * M), 2e-21, 1.9e-19
+    df = gen.from_dispersion_3d(
+        N, 6, tau=TAU, max_radius=2e10, layer_spacing=D,
+        energy=lambda kx, ky, kz: c2 * (kx**2 + ky**2) - 2 * tz * np.cos(kz * D) - ef,
+        gradient=lambda kx, ky, kz: (2 * c2 * kx, 2 * c2 * ky, 2 * tz * D * np.sin(kz * D) + 0 * kx))
+    fields = np.concatenate([[0.0], X * M / (E * TAU), -X * M / (E * TAU)])
+    s = bz.conductivity(df, fields, layer_spacing=D, kz="kz", backend=backend)
+    zz = np.max(np.abs(s.sigma_zz / s.sigma_zz.iloc[0] - 1))
+    scale = np.sqrt(s.sigma_xx.iloc[0] * s.sigma_zz.iloc[0])
+    cross = np.max(np.abs(s[["sigma_xz", "sigma_zx", "sigma_yz", "sigma_zy"]].to_numpy())) / scale
+    print(f"K12b: sigma_zz(0) = {s.sigma_zz.iloc[0]:.6e}; max |sigma_zz(B)/sigma_zz(0) - 1| = {zz:.1e}; "
+          f"max |sigma_xz, sigma_zx, ...| / sqrt(sigma_xx sigma_zz) = {cross:.1e}")
+    assert zz <= 1e-10 and cross <= 1e-10

@@ -73,7 +73,7 @@ def phi2(z) -> np.ndarray:
     return out
 
 
-def orbit_sums(s, gamma, vx, vy, field) -> np.ndarray:
+def orbit_sums(s, gamma, vx, vy, field, vz=None) -> np.ndarray:
     """Σ_n ½ s_n (v_{i,n} w_{j,n} + v_{i,n+1} w_{j,n+1}) for each field (s²·T·m²/s², i.e. σ
     without the prefactor g_s e³ / 4π²ħ²d).
 
@@ -85,16 +85,19 @@ def orbit_sums(s, gamma, vx, vy, field) -> np.ndarray:
         vx: Node velocities v_x (m/s), shape (N,).
         vy: Node velocities v_y (m/s), shape (N,).
         field: Field magnitudes |B| > 0 (T), shape (nB,).
+        vz: Node velocities v_z (m/s), shape (N,), for a k_z slice of a warped surface;
+            the orbit stays in its k_z plane (B ∥ ẑ) and v_z is carried along it.
 
     Returns:
-        ndarray of shape (nB, 2, 2).
+        ndarray of shape (nB, 2, 2), or (nB, 3, 3) with vz.
     """
     s = np.asarray(s, dtype=np.float64)
     gamma = np.asarray(gamma, dtype=np.float64)
     b = np.asarray(field, dtype=np.float64)
     n_nodes = s.size
-    v = np.stack([vx, vy], axis=1).astype(np.float64)  # (N, 2)
-    v_next = np.roll(v, -1, axis=0)  # (N, 2)
+    components = [vx, vy] if vz is None else [vx, vy, vz]
+    v = np.stack(components, axis=1).astype(np.float64)  # (N, d), d = 2 or 3
+    v_next = np.roll(v, -1, axis=0)  # (N, d)
 
     h = s[None, :] / b[:, None]  # real time per segment, (nB, N)
     z = gamma[None, :] * h  # (nB, N)
@@ -105,12 +108,12 @@ def orbit_sums(s, gamma, vx, vy, field) -> np.ndarray:
     total = np.sum(z, axis=1)  # Z, (nB,)
 
     # Pass 1: one orbit from w_0 = 0 gives S.
-    w = np.zeros((b.size, 2))  # (nB, 2)
+    w = np.zeros((b.size, v.shape[1]))  # (nB, d)
     for n in range(n_nodes):
         w = decay[:, n, None] * w + weight_start[:, n, None] * v[n] + weight_end[:, n, None] * v_next[n]
 
     # Closure: the periodic w_0 = S / (1 − e^{−Z}); expm1 keeps it accurate when Z is small.
-    history = np.empty((b.size, n_nodes, 2))  # w_n, (nB, N, 2)
+    history = np.empty((b.size, n_nodes, v.shape[1]))  # w_n, (nB, N, d)
     history[:, 0] = w / (-np.expm1(-total))[:, None]
 
     # Pass 2: w_n at every node, forwards again (dividing by e^{−z} would overflow).

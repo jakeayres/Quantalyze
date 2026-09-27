@@ -51,6 +51,8 @@ class PreparedContour:
         period: For an open orbit, the reciprocal-lattice vector that takes the last
             node's segment on to the first node, k_N = k_0 + G, in the prepared order
             (m⁻¹); zero for a closed contour. Shape (2,).
+        vz: Velocities v_z (m/s) for a k_z slice of a warped surface, in the same order,
+            never drift-corrected (∮ v_z dt is physical); None for a 2D contour. Shape (N,).
     """
 
     kx: np.ndarray
@@ -63,6 +65,7 @@ class PreparedContour:
     drift: np.ndarray
     charge: float
     period: np.ndarray
+    vz: Optional[np.ndarray] = None
 
 
 def _as_1d(name: str, values) -> np.ndarray:
@@ -88,6 +91,7 @@ def prepare_contour(
     charge: float = -ELEMENTARY_CHARGE,
     remove_drift: Optional[bool] = None,
     period: Optional[Sequence[float]] = None,
+    vz=None,
 ) -> PreparedContour:
     """Validate a Fermi-surface contour and prepare it for the kernels.
 
@@ -121,6 +125,8 @@ def prepare_contour(
             default (None) removes it from closed contours and never from open orbits.
         period: Reciprocal-lattice vector (G_x, G_y) (m⁻¹) of an open orbit, or None for
             a closed contour.
+        vz: Velocities v_z (m/s), shape (N,), for one k_z slice of a warped surface. With
+            B along ẑ the orbit stays in its k_z plane, so v_z only rides along with it.
 
     Returns:
         PreparedContour with the ordered nodes, velocities, s_n, γ_n, drift and period.
@@ -169,10 +175,14 @@ def prepare_contour(
     if tau.ndim == 0:
         tau = np.full(kx.shape, float(tau))
     tau = _as_1d("tau", tau)
+    vz = None if vz is None else _as_1d("vz", vz)
     lengths = {"kx": kx.size, "ky": ky.size, "vx": vx.size, "vy": vy.size, "tau": tau.size}
+    if vz is not None:
+        lengths["vz"] = vz.size
     if len(set(lengths.values())) != 1:
         raise ValueError(f"kx, ky, vx, vy and tau must all have the same length, not {lengths}")
-    for name, array in (("kx", kx), ("ky", ky), ("vx", vx), ("vy", vy), ("tau", tau)):
+    named = [("kx", kx), ("ky", ky), ("vx", vx), ("vy", vy), ("tau", tau)] + ([("vz", vz)] if vz is not None else [])
+    for name, array in named:
         bad = np.flatnonzero(~np.isfinite(array))
         if bad.size:
             raise ValueError(f"{name} must be finite; it is {array[bad[0]]} at node {bad[0]}")
@@ -193,6 +203,7 @@ def prepare_contour(
     shifts = [(0.0, 0.0)] if wrap is None else [tuple(wrap), tuple(-wrap)]
     if min(np.hypot(kx[-1] - kx[0] - gx, ky[-1] - ky[0] - gy) for gx, gy in shifts) <= same_point:
         kx, ky, vx, vy, tau, speed = (a[:-1] for a in (kx, ky, vx, vy, tau, speed))
+        vz = None if vz is None else vz[:-1]
         if kx.size < MIN_NODES:
             raise ValueError(
                 f"a contour needs at least {MIN_NODES} distinct nodes, not {kx.size} "
@@ -233,6 +244,7 @@ def prepare_contour(
     if np.all(along < 0):
         order = np.roll(np.arange(kx.size)[::-1], 1)  # reverse, keeping node 0 first
         kx, ky, vx, vy, tau, speed = (a[order] for a in (kx, ky, vx, vy, tau, speed))
+        vz = None if vz is None else vz[order]
         # The same segments, crossed the other way and in the opposite order.
         dkx, dky, length = -dkx[::-1], -dky[::-1], length[::-1]
         if wrap is not None:
@@ -284,6 +296,7 @@ def prepare_contour(
         drift=_frozen(drift),
         charge=charge,
         period=_frozen(np.zeros(2) if wrap is None else wrap),
+        vz=None if vz is None else _frozen(vz),
     )
 
 

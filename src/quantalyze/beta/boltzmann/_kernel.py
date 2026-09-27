@@ -190,3 +190,98 @@ def orbit_sums(s, gamma, vx, vy, field):
         ndarray of shape (nB, 2, 2).
     """
     return _orbit_sums_blocks(s, gamma, vx, vy, field, _blocks(field.size), False)[0]
+
+
+# k_z-warped surfaces: each slice is an in-plane orbit (B ∥ ẑ keeps k_z fixed) that
+# carries v_z along with it, so the same recursion runs on three velocity components.
+
+@njit(cache=True)
+def _sweep3(decay, start, end, s, vx, vy, vz, total, reverse, out):
+    """As `_sweep` with (v_x, v_y, v_z): writes the 3×3 orbit sums into `out`."""
+    n_nodes = s.size
+    w0 = 0.0
+    w1 = 0.0
+    w2 = 0.0
+    for m in range(n_nodes):
+        if reverse:
+            j = n_nodes - 1 - m
+            p = j + 1 if j + 1 < n_nodes else 0
+            q = j
+        else:
+            j = m
+            p = m
+            q = m + 1 if m + 1 < n_nodes else 0
+        w0 = decay[j] * w0 + start[j] * vx[p] + end[j] * vx[q]
+        w1 = decay[j] * w1 + start[j] * vy[p] + end[j] * vy[q]
+        w2 = decay[j] * w2 + start[j] * vz[p] + end[j] * vz[q]
+    closure = -np.expm1(-total)
+    first0 = w0 / closure
+    first1 = w1 / closure
+    first2 = w2 / closure
+
+    for i in range(3):
+        for k in range(3):
+            out[i, k] = 0.0
+    w0 = first0
+    w1 = first1
+    w2 = first2
+    for m in range(n_nodes):
+        if reverse:
+            j = n_nodes - 1 - m
+            p = j + 1 if j + 1 < n_nodes else 0
+            q = j
+        else:
+            j = m
+            p = m
+            q = m + 1 if m + 1 < n_nodes else 0
+        if m == n_nodes - 1:  # the orbit closes on w_0
+            n0 = first0
+            n1 = first1
+            n2 = first2
+        else:
+            n0 = decay[j] * w0 + start[j] * vx[p] + end[j] * vx[q]
+            n1 = decay[j] * w1 + start[j] * vy[p] + end[j] * vy[q]
+            n2 = decay[j] * w2 + start[j] * vz[p] + end[j] * vz[q]
+        half = 0.5 * s[j]
+        vp0, vp1, vp2 = vx[p], vy[p], vz[p]
+        vq0, vq1, vq2 = vx[q], vy[q], vz[q]
+        out[0, 0] += half * (vp0 * w0 + vq0 * n0)
+        out[0, 1] += half * (vp0 * w1 + vq0 * n1)
+        out[0, 2] += half * (vp0 * w2 + vq0 * n2)
+        out[1, 0] += half * (vp1 * w0 + vq1 * n0)
+        out[1, 1] += half * (vp1 * w1 + vq1 * n1)
+        out[1, 2] += half * (vp1 * w2 + vq1 * n2)
+        out[2, 0] += half * (vp2 * w0 + vq2 * n0)
+        out[2, 1] += half * (vp2 * w1 + vq2 * n1)
+        out[2, 2] += half * (vp2 * w2 + vq2 * n2)
+        w0 = n0
+        w1 = n1
+        w2 = n2
+
+
+@njit(parallel=True, cache=True)
+def _orbit_sums_blocks3(s, gamma, vx, vy, vz, field, n_blocks, both):
+    """The parallel 3×3 kernel, as `_orbit_sums_blocks`. Shape (2, nB, 3, 3)."""
+    n_nodes = s.size
+    n_fields = field.size
+    result = np.zeros((2, n_fields, 3, 3))
+    scratch = np.empty((n_blocks, 3, n_nodes))
+    for block in prange(n_blocks):
+        decay = scratch[block, 0]
+        start = scratch[block, 1]
+        end = scratch[block, 2]
+        for f in range(block * n_fields // n_blocks, (block + 1) * n_fields // n_blocks):
+            total = _segment_weights(s, gamma, field[f], decay, start, end)
+            for orientation in range(2 if both else 1):
+                _sweep3(decay, start, end, s, vx, vy, vz, total, orientation == 1, result[orientation, f])
+    return result
+
+
+def orbit_sums_both3(s, gamma, vx, vy, vz, field):
+    """3×3 orbit sums on the orbit and on the reversed orbit, shape (2, nB, 3, 3)."""
+    return _orbit_sums_blocks3(s, gamma, vx, vy, vz, field, _blocks(field.size), True)
+
+
+def orbit_sums3(s, gamma, vx, vy, vz, field):
+    """3×3 orbit sums with the nodes in the given order of motion, shape (nB, 3, 3)."""
+    return _orbit_sums_blocks3(s, gamma, vx, vy, vz, field, _blocks(field.size), False)[0]

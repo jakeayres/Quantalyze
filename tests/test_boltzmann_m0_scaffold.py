@@ -244,6 +244,16 @@ def test_open_sheets_span_one_period():
     assert np.all(minus["kx"] < 0) and np.all(minus["vx"] == -V0)
 
 
+def test_from_dispersion_accepts_a_sample_exactly_on_the_fermi_surface():
+    """With k_F = max_radius/2 one of the ray samples lands exactly on ε = 0; that is one
+    crossing, not two (it used to be rejected as not star-shaped)."""
+    c2 = HBAR**2 / (2 * ELECTRON_MASS)
+    df = gen.from_dispersion(128, tau=TAU, max_radius=2 * K_F,
+                             energy=lambda kx, ky: c2 * (kx**2 + ky**2 - K_F**2),
+                             gradient=lambda kx, ky: (2 * c2 * kx, 2 * c2 * ky))
+    np.testing.assert_allclose(np.hypot(df.kx, df.ky), K_F, rtol=1e-15)
+
+
 def test_generators_reject_bad_arguments():
     with pytest.raises(ValueError):
         gen.circle(64, k_fermi=K_F, mass=ELECTRON_MASS, tau=TAU, carrier="positron")

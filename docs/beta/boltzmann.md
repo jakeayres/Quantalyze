@@ -142,6 +142,39 @@ with field at all, while σ_yy falls as 1/B² at high field and ρ_yy grows with
     - **Drift removal is off for open orbits,** because their drift is physical. Passing
       `remove_drift=True` together with `period` raises an error.
 
+### Warping along k_z { #kz-warping }
+
+A layered metal's Fermi surface is a corrugated cylinder: its cross-section changes
+with k_z. Give it as slices at evenly spaced k_z (one period, 2π/d) with `kx`, `ky`,
+`kz`, `vx`, `vy`, `vz` columns, and pass `kz="kz"`. With the field along c each carrier
+stays in its slice, so each slice is an ordinary orbit carrying v_z with it, and the
+result is the full 3×3 tensor, including the interlayer σ_zz.
+
+```python
+--8<-- "beta/boltzmann/kz_warping.py:example"
+```
+
+```text title="Output"
+--8<-- "beta/boltzmann/kz_warping.txt"
+```
+
+![Interlayer magnetoresistance growing strongly while the in-plane one stays near zero](../examples/beta/boltzmann/kz_warping.png#only-light)
+![Interlayer magnetoresistance growing strongly while the in-plane one stays near zero](../examples/beta/boltzmann/kz_warping-dark.png#only-dark)
+
+Here v_z changes sign around every orbit (the interlayer hopping vanishes on the
+diagonals), so the orbital motion averages it away and the interlayer resistance rises
+steeply with field, while the nearly circular in-plane pocket has almost none.
+
+!!! warning "Watch out"
+
+    - **The slices must be evenly spaced over exactly one period of k_z,** 2π/d (with d
+      the `layer_spacing`); `bz.generators.from_dispersion_3d` makes them that way. A
+      handful of slices per period of the warping is usually enough, because averaging
+      evenly spaced slices of a periodic function is very accurate.
+    - **Only B ∥ c is supported.** Tilted fields would move carriers between slices.
+    - **`magnetoresistance(sigma, component="zz")`** gives the interlayer
+      magnetoresistance; `carrier_density(df, ..., kz="kz")` averages the slices.
+
 ## `resistivity` { #resistivity }
 
 **Invert σ to get ρ at each field.** It takes the output of `conductivity`, so combine
@@ -184,7 +217,8 @@ is already within 3% of that.
 `bz.generators` makes contour DataFrames:
 
 - **From your own band:** `from_dispersion` traces ε(k) = 0 for any ε(k) and ∇ε you
-  supply (above), and `polar` builds a pocket of any shape from k_F(φ).
+  supply (above), `from_dispersion_3d` does the same for a k_z-warped surface, slice by
+  slice, and `polar` builds a pocket of any shape from k_F(φ).
 - **Test shapes with known answers:** `circle`, `ellipse`, `tight_binding` and
   `open_sheets`.
 

@@ -54,12 +54,14 @@ class ParametricContour:
         v: φ ↦ (v_x, v_y), the group velocity ∇ε/ħ (m/s).
         tau: φ ↦ τ (s).
         dk: Optional φ ↦ (dk_x/dφ, dk_y/dφ) (m⁻¹). Finite differences are used if omitted.
+        vz: Optional φ ↦ v_z (m/s) for one k_z slice of a warped surface; σ is then 3×3.
     """
 
     k: Callable[[np.ndarray], Pair]
     v: Callable[[np.ndarray], Pair]
     tau: Callable[[np.ndarray], np.ndarray]
     dk: Optional[Callable[[np.ndarray], Pair]] = None
+    vz: Optional[Callable[[np.ndarray], np.ndarray]] = None
 
     @classmethod
     def circle(cls, *, k_fermi, mass, tau, carrier="electron"):
@@ -167,6 +169,14 @@ class _Geometry:
     def velocity(self, phi) -> Pair:
         return self._v(np.asarray(phi, dtype=float))
 
+    def velocities(self, phi) -> tuple:
+        """(v_x, v_y), or (v_x, v_y, v_z) for a slice of a warped surface."""
+        phi = np.asarray(phi, dtype=float)
+        vx, vy = self._v(phi)
+        if self.contour.vz is None:
+            return vx, vy
+        return vx, vy, np.broadcast_to(self.contour.vz(phi), phi.shape).astype(float)
+
     def ds(self, phi) -> np.ndarray:
         """Geometric time per unit parameter, ds/dφ = ħ|dk/dφ| / (e|v|) (s·T)."""
         dkx, dky = self.dk(phi)
@@ -249,14 +259,16 @@ def sigma(
         max_nodes: Largest number of outer points tried before giving up.
 
     Returns:
-        ndarray of shape (nB, 2, 2), σ with index order [[xx, xy], [yx, yy]].
+        ndarray of shape (nB, 2, 2), or (nB, 3, 3) if the contour has v_z: σ with index
+        order [[xx, xy, …], [yx, yy, …], …]. The ds of the orbit uses the in-plane speed.
 
     Raises:
         RuntimeError: If the outer integral has not converged by `max_nodes` points.
     """
     geometry = _Geometry(contour)
     fields = np.atleast_1d(np.asarray(fields, dtype=float))  # (nB,)
-    result = np.empty((fields.size, 2, 2))
+    dim = 2 if contour.vz is None else 3
+    result = np.empty((fields.size, dim, dim))
     for index, field in enumerate(fields):
         if field == 0:
             result[index] = _sigma_zero_field(geometry, layer_spacing, spin_degeneracy, rtol)
@@ -270,9 +282,9 @@ def _sigma_zero_field(geometry, layer_spacing, spin_degeneracy, rtol):
     def integrand(phi):
         p = np.array([phi])
         dkx, dky = geometry.dk(p)
-        vx, vy = geometry.velocity(p)
-        weight = np.hypot(dkx, dky) * geometry.contour.tau(p) / np.hypot(vx, vy)
-        return (weight * np.array([vx * vx, vx * vy, vy * vx, vy * vy])[:, 0]).reshape(2, 2)
+        v = np.array(geometry.velocities(p))[:, 0]  # (d,)
+        weight = (np.hypot(dkx, dky) * geometry.contour.tau(p) / np.hypot(v[0], v[1]))[0]
+        return weight * np.outer(v, v)
 
     integral, _ = quad_vec(integrand, 0.0, TWO_PI, epsabs=0.0, epsrel=1e-2 * rtol, limit=2000)
     prefactor = spin_degeneracy * ELEMENTARY_CHARGE**2 / (4 * np.pi**2 * HBAR * layer_spacing)
@@ -304,21 +316,16 @@ def _sigma_at_field(geometry, field, layer_spacing, charge, spin_degeneracy, orb
             earlier = phi - direction * u  # the point the carrier left u earlier in φ
             damping = np.exp(-geometry.damping(phi, u, direction) / b)
             weight = geometry.ds(earlier) * damping
-            vx, vy = geometry.velocity(earlier)
-            return np.concatenate([vx * weight, vy * weight])  # (2M,)
+            return np.concatenate([v * weight for v in geometry.velocities(earlier)])  # (dM,)
 
         integral, _ = quad_vec(history, 0.0, TWO_PI, epsabs=0.0, epsrel=1e-2 * rtol,
                                points=breakpoints or None, limit=10000)
         # w_j = (1/|B|) ∫ v_j ds′ e^{−ΔD} · Σ_K e^{−KZ}, with dt′ = ds′/|B|
-        wx, wy = integral.reshape(2, n_nodes) * history_weight / b
-        vx, vy = geometry.velocity(phi)
-        ds = geometry.ds(phi)
+        v = np.array(geometry.velocities(phi))  # (d, M)
+        w = integral.reshape(v.shape[0], n_nodes) * history_weight / b  # (d, M)
         # |B| ∮ dt = ∮ ds, by the periodic trapezoid rule
-        weight = TWO_PI / n_nodes * ds
-        current = prefactor * np.array([
-            [np.sum(weight * vx * wx), np.sum(weight * vx * wy)],
-            [np.sum(weight * vy * wx), np.sum(weight * vy * wy)],
-        ])
+        weight = TWO_PI / n_nodes * geometry.ds(phi)
+        current = prefactor * np.einsum("m,im,jm->ij", weight, v, w)
         if previous is not None and np.max(np.abs(current - previous)) <= rtol * np.max(np.abs(current)):
             return current
         previous = current
