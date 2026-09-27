@@ -1,0 +1,83 @@
+[project]
+site_name = "Quantalyze"
+site_url = "https://quantalyze.readthedocs.io/en/latest/"
+repo_url = "https://github.com/jakeayres/Quantalyze"
+repo_name = "Quantalyze"
+nav = [
+  { "Overview" = "index.md" },
+  { "Core" = [
+    { "Overview" = "core/overview.md" },
+    { "Fitting" = "core/fitting.md" },
+    { "Differentiation" = "core/differentiation.md" },
+    { "Smoothing" = "core/smoothing.md" },
+    { "Symmetrization" = "core/symmetrization.md" },
+    { "Interpolation" = "core/interpolation.md" },
+    { "FFT" = "core/fft.md" },
+    { "Constants" = "core/constants.md" },
+  ] },
+  { "Transport" = "transport.md" },
+  { "Quantum Oscillations" = "quantum_oscillations.md" },
+  { "Beta" = [
+    { "Overview" = "beta/overview.md" },
+    { "Plotting" = "beta/plotting.md" },
+    { "Thermometry" = "beta/thermometry.md" },
+    { "Boltzmann" = "beta/boltzmann.md" },
+  ] },
+]
+
+[project.theme]
+features = [
+  "content.code.copy",
+  "navigation.footer",
+]
+
+[project.theme.icon]
+repo = "fontawesome/brands/git"
+
+# Light/dark mode, following the system setting by default (Zensical's starter palette).
+# Needed for the #only-light / #only-dark figures in the docs.
+[[project.theme.palette]]
+media = "(prefers-color-scheme)"
+toggle.icon = "lucide/sun-moon"
+toggle.name = "Switch to light mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to system preference"
+
+[project.markdown_extensions]
+admonition = {}
+attr_list = {}
+md_in_html = {}
+tables = {}
+toc.permalink = true
+pymdownx.blocks.caption = {}
+pymdownx.details = {}
+pymdownx.highlight.anchor_linenums = true
+pymdownx.highlight.pygments_lang_class = true
+pymdownx.inlinehilite = {}
+pymdownx.superfences = {}
+# Example code is pulled in from docs/examples/ (see scripts/build_doc_examples.py)
+pymdownx.snippets.base_path = ["docs/examples"]
+pymdownx.snippets.check_paths = true
+
+[project.plugins.mkdocstrings.handlers.python]
+paths = ["src"]
+
+[project.plugins.mkdocstrings.handlers.python.options]
+heading_level = 2
+show_root_heading = true
+show_root_toc_entry = false
+show_root_full_path = false
+merge_init_into_class = true
+show_symbol_type_heading = true
+show_symbol_type_toc = true
+show_docstring_examples = true

@@ -4,3 +4,4 @@ from .core.interpolation import *
 from .core.smoothing import *
 from .core.symmetrization import *
 from .core.fft import *
+from .core import constants

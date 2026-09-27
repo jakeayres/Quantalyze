@@ -1,26 +1,54 @@
 # Core
 
-The **Core** module of the Quantalyze package provides essential utilities for scientific data analysis. These utilities include functions for fitting, symmetrization, smoothing, differentiation, and Fourier transforms. All of the more specific modules, such as `transport`, derive much of their functionality from this foundational module.
+The core functions are general-purpose tools for measured data: fitting, smoothing, differentiating, symmetrizing, interpolating and Fourier transforming. Everything is available straight from the package:
 
-All core submodules are importable from `quantalyze` 
+```python
+import quantalyze as qz
+```
 
-## Differentiation
+## How every function works
 
-The `differentiation` module provides tools for calculating numerical derivatives of data in `pandas.DataFrame` objects. It includes methods `forward_difference` and `backward_difference` for approximating derivatives using one-sided differences, and `central_difference` for a more accurate two-sided approach. The `derivative` function simply wraps `central_difference`.
+- **Pass a DataFrame and the names of its columns.** For example, `qz.derivative(df, "field", "resistance")`. You never pull out arrays yourself.
+- **Your DataFrame is never modified.** Functions that compute one value per row return a `pandas.Series` lined up with your rows, so you can store it as a new column: `df["dR/dB"] = qz.derivative(...)`. Functions that change the rows (resampling, binning, transforming) return a new `DataFrame`.
+- **Several measurements?** `bin`, `symmetrize` and `antisymmetrize` also accept a list of DataFrames, which they combine first.
 
-## Interpolation
+## What's in core
 
-The `interpolation` module provides tools for interpolating data in pandas DataFrames. It allows users to map data onto new x-values using methods like linear, quadratic, or cubic interpolation. The `interpolate` function works seamlessly with pandas objects, making it easy to handle missing data or resample datasets for analysis.
+| Function | Use it to | Returns | Page |
+|---|---|---|---|
+| `qz.fit` | fit a model to two columns | a `Fit` | [Fitting](fitting.md) |
+| `qz.derivative` | take dy/dx | `Series` | [Differentiation](differentiation.md) |
+| `qz.forward_difference`, `qz.backward_difference`, `qz.central_difference` | one-sided or central slopes | `Series` | [Differentiation](differentiation.md#one-sided) |
+| `qz.bin` | average data onto a regular grid, or merge sweeps | `DataFrame` | [Smoothing](smoothing.md#bin) |
+| `qz.window` | rolling-average smoothing | `Series` | [Smoothing](smoothing.md#window) |
+| `qz.savgol_filter` | smoothing that keeps peaks | `Series` | [Smoothing](smoothing.md#savgol_filter) |
+| `qz.symmetrize` | keep the part even in x (e.g. rxx) | `DataFrame` | [Symmetrization](symmetrization.md#symmetrize) |
+| `qz.antisymmetrize` | keep the part odd in x (e.g. Hall) | `DataFrame` | [Symmetrization](symmetrization.md#antisymmetrize) |
+| `qz.interpolate` | resample all columns onto new x values | `DataFrame` | [Interpolation](interpolation.md) |
+| `qz.fft`, `qz.Window` | frequency spectrum (e.g. quantum oscillations) | `DataFrame` | [FFT](fft.md) |
+| `qz.constants` | physical constants in SI units | — | [Constants](constants.md) |
 
-## Smoothing
+## A complete example
 
-The `smoothing` module provides practical methods for reducing noise in data. It includes `bin` for grouping data into bins, `window` for rolling window smoothing, and `savgol_filter` for preserving features like peaks during smoothing.
+The functions are designed to chain together. Here, two raw Hall sweeps of a 100 nm film become a carrier density in three steps.
 
-## Fitting
+??? example "Example data"
 
-The `fitting` module provides a simple wrapper for `scipy.curve_fit()` that facilitates the rapid fitting to data held in a `pandas.DataFrame` and subsequent evaluation and plotting of these fits. The expected work flow is to call `quantalyze.fit(...)` and either retrieve the result of the fit from the attributes of the returned `Fit` object or call one of the `Fit` object's utility methods (e.g. `evaluate(...)` or `plot(...)`).
+    `up` and `down` are field sweeps of the Hall resistance `rxy`, with an offset from misaligned contacts.
 
-## Symmetrization
+    ```python
+    --8<-- "core/overview/_data.py"
+    ```
 
-The `symmetrization` module provides tools for processing data to enforce symmetry or antisymmetry. The `symmetrize` function averages values with their reversed counterparts to create symmetric datasets, while the `antisymmetrize` function computes the difference between values and their reversed counterparts to create antisymmetric datasets.
+```python
+--8<-- "core/overview/pipeline.py:example"
+```
 
+```text title="Output"
+--8<-- "core/overview/pipeline.txt"
+```
+
+![Raw Hall sweeps, the antisymmetrized Hall resistance, and the straight-line fit](../examples/core/overview/pipeline.png#only-light)
+![Raw Hall sweeps, the antisymmetrized Hall resistance, and the straight-line fit](../examples/core/overview/pipeline-dark.png#only-dark)
+
+Every example in these docs can be copied and run as it stands. Open the "Example data" box on each page and run that code first.

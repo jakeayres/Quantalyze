@@ -1,0 +1,2 @@
+2000 points, spacing 7.78 T
+32768 points, spacing 0.47 T

@@ -1,5 +1,8 @@
-# constants.py
-# This module contains a list of mathematical and physical constants.
+"""
+Mathematical and physical constants in SI units (CODATA 2018 / 2019 SI redefinition).
+
+Available as `qz.constants`, e.g. `qz.constants.HBAR`.
+"""
 
 # Pi (π), the ratio of a circle's circumference to its diameter
 PI = 3.141592653589793
@@ -32,7 +35,7 @@ AVOGADRO_CONSTANT = 6.02214076e23
 GAS_CONSTANT = 8.314462618
 
 # Electron mass (kg)
-ELECTRON_MASS = 9.10938356e-31
+ELECTRON_MASS = 9.1093837015e-31
 EM = ELECTRON_MASS
 
 # Proton mass (kg)

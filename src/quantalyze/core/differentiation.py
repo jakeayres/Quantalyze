@@ -3,19 +3,19 @@ import pandas as pd
 
 def forward_difference(df, x_column, y_column) -> pd.Series:
     """
-    Calculates the forward difference of a given DataFrame.
+    Slope from each row to the next row: `(y[i+1] - y[i]) / (x[i+1] - x[i])`.
 
     Args:
-        df (pandas.DataFrame): The DataFrame containing the data.
-        x_column (str): The name of the column representing the x-values.
-        y_column (str): The name of the column representing the y-values.
+        df (pandas.DataFrame): The data, ordered by `x_column` (ascending or descending).
+        x_column (str): The column to differentiate with respect to, e.g. `'field'`.
+        y_column (str): The column to differentiate, e.g. `'resistance'`.
 
     Returns:
-        pandas.Series: A Series containing the forward differences of the y-values with respect to the x-values.
-        
+        pandas.Series: dy/dx, aligned with `df.index`. The last value is NaN.
+
     Examples:
-        >>> import quantalize as qz
-        >>> df['forward_diff'] = qz.forward_difference(df, 'x', 'y')
+        >>> import quantalyze as qz
+        >>> df['dR/dB'] = qz.forward_difference(df, 'field', 'resistance')
     """
     forward_diff = df[y_column].diff().shift(-1) / df[x_column].diff().shift(-1)
     return forward_diff
@@ -23,19 +23,19 @@ def forward_difference(df, x_column, y_column) -> pd.Series:
 
 def backward_difference(df, x_column, y_column) -> pd.Series:
     """
-    Calculates the backward difference of a DataFrame column.
+    Slope from the previous row to each row: `(y[i] - y[i-1]) / (x[i] - x[i-1])`.
 
     Args:
-        df (pandas.DataFrame): The DataFrame containing the data.
-        x_column (str): The name of the column to use as the x-values.
-        y_column (str): The name of the column to use as the y-values.
+        df (pandas.DataFrame): The data, ordered by `x_column` (ascending or descending).
+        x_column (str): The column to differentiate with respect to, e.g. `'field'`.
+        y_column (str): The column to differentiate, e.g. `'resistance'`.
 
     Returns:
-        pandas.Series: The backward difference of the y_column with respect to the x_column.
-        
+        pandas.Series: dy/dx, aligned with `df.index`. The first value is NaN.
+
     Examples:
-        >>> import quantalize as qz
-        >>> df['backward_diff'] = qz.backward_difference(df, 'x', 'y')
+        >>> import quantalyze as qz
+        >>> df['dR/dB'] = qz.backward_difference(df, 'field', 'resistance')
     """
     backward_diff = df[y_column].diff() / df[x_column].diff()
     return backward_diff
@@ -43,22 +43,22 @@ def backward_difference(df, x_column, y_column) -> pd.Series:
 
 def central_difference(df, x_column, y_column) -> pd.Series:
     """
-    Calculates the central difference for a given DataFrame.
+    The average of the forward and backward differences at each row.
 
-    The central difference is computed as the average of the forward difference
-    and the backward difference for the specified columns.
+    More accurate than either one-sided difference: for evenly spaced data it is exact
+    for any quadratic.
 
     Args:
-        df (pandas.DataFrame): The input DataFrame containing the data.
-        x_column (str): The name of the column representing the x-values.
-        y_column (str): The name of the column representing the y-values.
+        df (pandas.DataFrame): The data, ordered by `x_column` (ascending or descending).
+        x_column (str): The column to differentiate with respect to, e.g. `'field'`.
+        y_column (str): The column to differentiate, e.g. `'resistance'`.
 
     Returns:
-        pandas.Series: A Series containing the central difference values.
-        
+        pandas.Series: dy/dx, aligned with `df.index`. The first and last values are NaN.
+
     Examples:
-        >>> import quantalize as qz
-        >>> df['central_diff'] = qz.central_difference(df, 'x', 'y')
+        >>> import quantalyze as qz
+        >>> df['dR/dB'] = qz.central_difference(df, 'field', 'resistance')
     """
     forward_diff = forward_difference(df, x_column, y_column)
     backward_diff = backward_difference(df, x_column, y_column)
@@ -66,24 +66,24 @@ def central_difference(df, x_column, y_column) -> pd.Series:
     return central_diff
 
 
-
 def derivative(df, x_column, y_column) -> pd.Series:
     """
-    Calculates the derivative of the y_column with respect to the x_column.
+    The numerical derivative dy/dx. Start here: it is the same as `central_difference`.
 
-    This method computes the numerical derivative of a given y_column with respect to an x_column
-    in a pandas DataFrame using the central difference method.
+    Rows must be ordered by `x_column` and each x value must appear only once (bin
+    repeated sweeps with `bin` first). Differentiation amplifies noise, so smooth noisy
+    data (e.g. with `savgol_filter`) before differentiating.
 
     Args:
-        df (pandas.DataFrame): The input DataFrame containing the data.
-        x_column (str): The name of the column representing the x-axis.
-        y_column (str): The name of the column representing the y-axis.
+        df (pandas.DataFrame): The data, ordered by `x_column` (ascending or descending).
+        x_column (str): The column to differentiate with respect to, e.g. `'field'`.
+        y_column (str): The column to differentiate, e.g. `'resistance'`.
 
     Returns:
-        pandas.Series: A Series with the derivative values.
-        
+        pandas.Series: dy/dx, aligned with `df.index`. The first and last values are NaN.
+
     Examples:
-        >>> import quantalize as qz
-        >>> df['derivative'] = qz.derivative(df, 'x', 'y')
+        >>> import quantalyze as qz
+        >>> df['dR/dB'] = qz.derivative(df, 'field', 'resistance')
     """
     return central_difference(df, x_column, y_column)

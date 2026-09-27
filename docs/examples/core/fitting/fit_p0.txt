@@ -1,0 +1,2 @@
+without p0: centre = 18.95 K, width = 6.9e-06 K
+with p0:    centre = 9.99 K, width = 0.26 K
