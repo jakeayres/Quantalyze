@@ -146,10 +146,11 @@ def test_rejects_unclosed_contour():
         prepare_contour(*arrays(half))
 
 
-def test_open_orbits_are_not_supported_yet():
+def test_an_open_sheet_is_accepted_with_its_period():
+    """The same nodes that are rejected as unclosed are a valid open orbit with period."""
     sheet = gen.open_sheets(64, k0=5e9, velocity=2e5, tau=TAU, period=2 * np.pi / A)[0]
-    with pytest.raises(NotImplementedError):
-        prepare_contour(*arrays(sheet), period=(0.0, 2 * np.pi / A))
+    prepared = prepare_contour(*arrays(sheet), period=(0.0, 2 * np.pi / A))
+    assert prepared.kx.size == 64 and np.array_equal(prepared.drift, [0.0, 0.0])
 
 
 def test_rejects_nodes_out_of_order():

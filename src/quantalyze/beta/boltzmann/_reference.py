@@ -104,6 +104,32 @@ class ParametricContour:
 
         return cls(k=k, v=v, tau=_tau_of_polar_angle(tau, k), dk=dk)
 
+    @classmethod
+    def open_sheet(cls, *, k0, velocity, warping, period, tau, side=1.0):
+        """One period of the open sheet k_x = s(k0 + δ cos(2πk_y/G)) of ε = ħv₀(s k_x − k0 − δ cos(2πk_y/G)).
+
+        The parameter φ ∈ [0, 2π) maps to k_y = G(φ/2π − ½), so k(φ + 2π) = k(φ) + G ŷ while
+        dk/dφ, v and τ (a float, or a function of φ) are 2π-periodic, which is all the
+        quadrature uses.
+        """
+        b = 2 * np.pi / period
+
+        def k(p):
+            ky = period * (p / TWO_PI - 0.5)
+            return side * (k0 + warping * np.cos(b * ky)), ky
+
+        def dk(p):
+            ky = period * (p / TWO_PI - 0.5)
+            dky = period / TWO_PI
+            return -side * warping * b * np.sin(b * ky) * dky, np.full(np.shape(p), dky)
+
+        def v(p):
+            ky = period * (p / TWO_PI - 0.5)
+            return np.full(np.shape(p), side * velocity), velocity * warping * b * np.sin(b * ky)
+
+        tau_fn = tau if callable(tau) else (lambda p: np.full(np.shape(p), float(tau)))
+        return cls(k=k, v=v, tau=tau_fn, dk=dk)
+
 
 class _Geometry:
     """Per-contour quantities that do not depend on the field."""

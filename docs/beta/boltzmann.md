@@ -105,11 +105,42 @@ saturating (doubling B quadruples it), while R_H stays constant.
     - **Use enough points.** The error falls as N⁻²; N = 512 gives about 3 × 10⁻⁵ on a
       simple pocket. The same error shows up as an apparent magnetoresistance of order
       10⁻⁵ where the exact answer has none, so don't read physics into MR that small.
-    - **Contours must be closed.** Don't repeat the first point at the end; it is dropped
-      if you do.
+    - **Contours must be closed, unless you pass `period`** (see [open orbits](#open-orbits)).
+      Don't repeat the first point at the end; it is dropped if you do.
     - **Symmetrisation is on by default** (`symmetrize=True`). It enforces
       σ(−B) = σ(B)ᵀ and removes a small discretisation error in the low-field Hall
       coefficient. Leave it on unless you are checking the raw numbers.
+
+### Open orbits { #open-orbits }
+
+A Fermi sheet that crosses the Brillouin zone never closes. Give one period of it, with
+`period=(G_x, G_y)`: the reciprocal-lattice vector that takes the last point on to the
+first. Carriers then drift along the sheet forever, so the magnetoresistance does not
+saturate in the direction across it.
+
+```python
+--8<-- "beta/boltzmann/open_orbits.py:example"
+```
+
+```text title="Output"
+--8<-- "beta/boltzmann/open_orbits.txt"
+```
+
+![Open-orbit magnetoresistance: none along x, growing without limit along y](../examples/beta/boltzmann/open_orbits.png#only-light)
+![Open-orbit magnetoresistance: none along x, growing without limit along y](../examples/beta/boltzmann/open_orbits-dark.png#only-dark)
+
+The sheets run along k_y, so the field sweeps electrons along them and they keep moving
+along x in real space. Here v_x is ±v₀ everywhere on the sheets, so σ_xx does not change
+with field at all, while σ_yy falls as 1/B² at high field and ρ_yy grows without limit.
+
+!!! warning "Watch out"
+
+    - **Give exactly one period,** without repeating the first point shifted by G (it is
+      dropped if you do). Either sign of G works.
+    - **Mix open and closed contours** by passing a list for `period`, aligned with the
+      list of contours, with `None` for each closed pocket.
+    - **Drift removal is off for open orbits,** because their drift is physical. Passing
+      `remove_drift=True` together with `period` raises an error.
 
 ## `resistivity` { #resistivity }
 

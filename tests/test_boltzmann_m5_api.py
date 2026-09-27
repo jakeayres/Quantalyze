@@ -123,10 +123,19 @@ def test_hall_coefficient_and_magnetoresistance_series():
         bz.magnetoresistance(s[s["field"] != 0])
 
 
-def test_open_orbits_not_supported_yet():
-    sheet = gen.open_sheets(64, k0=5e9, velocity=2e5, tau=TAU, period=2 * np.pi / 3.87e-10)[0]
-    with pytest.raises(NotImplementedError):
-        bz.conductivity(sheet, 1.0, layer_spacing=D, period=(0.0, 2 * np.pi / 3.87e-10))
+def test_period_can_be_given_per_contour():
+    """One (G_x, G_y) for every contour, or a list aligned with dfs (None for closed pockets)."""
+    g = 2 * np.pi / 3.87e-10
+    plus, minus = gen.open_sheets(128, k0=5e9, velocity=2e5, tau=TAU, period=g)
+    both = bz.conductivity([plus, minus], FIELDS, layer_spacing=D, period=(0.0, g))
+    aligned = bz.conductivity([plus, minus], FIELDS, layer_spacing=D, period=[(0.0, g), (0.0, g)])
+    pd.testing.assert_frame_equal(both, aligned)
+    mixed = bz.conductivity([plus, circle()], FIELDS, layer_spacing=D, period=[(0.0, g), None])
+    separate = (bz.conductivity(plus, FIELDS, layer_spacing=D, period=(0.0, g))[SIGMA].to_numpy()
+                + bz.conductivity(circle(), FIELDS, layer_spacing=D)[SIGMA].to_numpy())
+    np.testing.assert_allclose(mixed[SIGMA].to_numpy(), separate, rtol=1e-14)
+    with pytest.raises(ValueError):
+        bz.conductivity([plus, minus], FIELDS, layer_spacing=D, period=[(0.0, g)])
 
 
 def test_carrier_density():

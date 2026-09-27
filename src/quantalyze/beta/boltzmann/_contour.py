@@ -48,6 +48,9 @@ class PreparedContour:
         drift: The velocity v̄ subtracted from every node (m/s); zero if drift
             removal was off. Shape (2,).
         charge: Carrier charge q (C).
+        period: For an open orbit, the reciprocal-lattice vector that takes the last
+            node's segment on to the first node, k_N = k_0 + G, in the prepared order
+            (m⁻¹); zero for a closed contour. Shape (2,).
     """
 
     kx: np.ndarray
@@ -59,6 +62,7 @@ class PreparedContour:
     gamma: np.ndarray
     drift: np.ndarray
     charge: float
+    period: np.ndarray
 
 
 def _as_1d(name: str, values) -> np.ndarray:
@@ -82,21 +86,28 @@ def prepare_contour(
     tau,
     *,
     charge: float = -ELEMENTARY_CHARGE,
-    remove_drift: bool = True,
+    remove_drift: Optional[bool] = None,
     period: Optional[Sequence[float]] = None,
 ) -> PreparedContour:
-    """Validate a closed Fermi-surface contour and prepare it for the kernels.
+    """Validate a Fermi-surface contour and prepare it for the kernels.
 
     The nodes may be given in either direction and from any starting node. The
     orientation is taken from the velocities, not the input order: the result runs
     along ħ dk/dt = q v × B for B = +B ẑ, and keeps the input's first node first.
-    A final node that repeats the first is dropped.
+    A final node that repeats the first (or, on an open orbit, the first shifted by G)
+    is dropped.
+
+    A closed contour goes all the way round a pocket. An open orbit (`period` given)
+    covers one period of a sheet that crosses the Brillouin zone: its last segment runs
+    from the last node to the first node shifted by the reciprocal-lattice vector G.
+    Either sign of G is accepted; the one that joins the last node to the first is used.
 
     With drift removal on, the velocity v̄ = Σ ½ s_n (v_n + v_{n+1}) / Σ s_n is
     subtracted from every node. On a closed orbit ∮ v dt = 0 exactly, so v̄ is pure
     discretisation error; removing it with the same trapezoid weights the kernels use
     makes the discrete ∮ v dt vanish, which stops σ_xx from levelling off at high
-    field instead of falling as 1/B².
+    field instead of falling as 1/B². On an open orbit the drift is physical (it is
+    why open-orbit magnetoresistance does not saturate), so it is never removed.
 
     Args:
         kx: Node wavevectors k_x (m⁻¹), array-like of shape (N,).
@@ -106,19 +117,21 @@ def prepare_contour(
         tau: Relaxation times (s), shape (N,) or a single float; finite and positive.
         charge: Carrier charge q (C), ±e. The default −e is for band electrons; a
             hole-like pocket is described by its inward-pointing velocities, not by q.
-        remove_drift: Subtract the discretisation drift v̄ from the velocities.
-        period: Reciprocal-lattice vector (G_x, G_y) (m⁻¹) joining the last node of an
-            open orbit to its first. Open orbits are not supported yet.
+        remove_drift: Subtract the discretisation drift v̄ from the velocities. The
+            default (None) removes it from closed contours and never from open orbits.
+        period: Reciprocal-lattice vector (G_x, G_y) (m⁻¹) of an open orbit, or None for
+            a closed contour.
 
     Returns:
-        PreparedContour with the ordered nodes, velocities, s_n, γ_n and drift.
+        PreparedContour with the ordered nodes, velocities, s_n, γ_n, drift and period.
 
     Raises:
         ValueError: If the arrays are not 1-D or differ in length; if any value is
             NaN or infinite; if τ ≤ 0 or v = 0 at a node; if there are fewer than 16
-            distinct nodes; if two consecutive nodes coincide; if the contour is not
-            closed; if the nodes are not ordered along the contour; or if |q| ≠ e.
-        NotImplementedError: If `period` is given.
+            distinct nodes; if two consecutive nodes coincide; if a closed contour does
+            not close, or `period` does not join the last node to the first; if the
+            nodes are not ordered along the contour; if |q| ≠ e; or if
+            `remove_drift=True` is combined with `period`.
 
     Warns:
         UserWarning: If the velocities are not normal to the contour: a sign of
@@ -132,8 +145,17 @@ def prepare_contour(
         >>> df = bz.generators.circle(512, k_fermi=7e9, mass=ELECTRON_MASS, tau=1e-13)
         >>> contour = prepare_contour(df["kx"], df["ky"], df["vx"], df["vy"], df["tau"])
     """
+    wrap = None  # G for an open orbit
     if period is not None:
-        raise NotImplementedError("open orbits (period) are not supported yet")
+        wrap = np.asarray(period, dtype=np.float64)
+        if wrap.shape != (2,) or not np.all(np.isfinite(wrap)) or not np.any(wrap):
+            raise ValueError(f"period must be a finite, non-zero pair (G_x, G_y), not {period!r}")
+        if remove_drift:
+            raise ValueError("remove_drift=True cannot be combined with period: on an open orbit "
+                             "the drift ∮ v dt is physical")
+        remove_drift = False
+    elif remove_drift is None:
+        remove_drift = True
 
     charge = float(charge)
     if not np.isfinite(charge) or charge == 0:
@@ -164,10 +186,12 @@ def prepare_contour(
     if kx.size < MIN_NODES:
         raise ValueError(f"a contour needs at least {MIN_NODES} nodes, not {kx.size}")
 
-    # A closing point that repeats the first node, e.g. from θ = linspace(0, 2π, N).
-    size = max(np.ptp(kx), np.ptp(ky))
+    # A closing point that repeats the first node, e.g. from θ = linspace(0, 2π, N), or on
+    # an open orbit the first node shifted by ±G.
+    size = max(np.ptp(kx), np.ptp(ky), 0.0 if wrap is None else float(np.hypot(*wrap)))
     same_point = _SAME_POINT * size
-    if np.hypot(kx[-1] - kx[0], ky[-1] - ky[0]) <= same_point:
+    shifts = [(0.0, 0.0)] if wrap is None else [tuple(wrap), tuple(-wrap)]
+    if min(np.hypot(kx[-1] - kx[0] - gx, ky[-1] - ky[0] - gy) for gx, gy in shifts) <= same_point:
         kx, ky, vx, vy, tau, speed = (a[:-1] for a in (kx, ky, vx, vy, tau, speed))
         if kx.size < MIN_NODES:
             raise ValueError(
@@ -177,16 +201,28 @@ def prepare_contour(
 
     dkx = np.roll(kx, -1) - kx  # segment n: node n → n+1, (N,)
     dky = np.roll(ky, -1) - ky
+    if wrap is not None:
+        # The last segment ends at the first node shifted by whichever of ±G is adjacent.
+        if np.hypot(dkx[-1] - wrap[0], dky[-1] - wrap[1]) < np.hypot(dkx[-1] + wrap[0], dky[-1] + wrap[1]):
+            wrap = -wrap
+        dkx[-1] += wrap[0]
+        dky[-1] += wrap[1]
     length = np.hypot(dkx, dky)
     bad = np.flatnonzero(length <= same_point)
     if bad.size:
         n = bad[0]
         raise ValueError(f"nodes {n} and {(n + 1) % kx.size} coincide (a zero-length segment)")
     if length[-1] > _OPEN_GAP * np.max(length[:-1]):
+        ratio = length[-1] / np.max(length[:-1])
+        if wrap is None:
+            raise ValueError(
+                "the contour is not closed: the gap from the last node back to the first is "
+                f"{ratio:.1f} times the longest other segment. "
+                "Sample the whole orbit, or pass period for an open orbit"
+            )
         raise ValueError(
-            "the contour is not closed: the gap from the last node back to the first is "
-            f"{length[-1] / np.max(length[:-1]):.1f} times the longest other segment. "
-            "Sample the whole orbit, or pass period for an open orbit"
+            "period does not join the last node to the first: the gap is "
+            f"{ratio:.1f} times the longest other segment. Give the nodes of exactly one period"
         )
 
     # Direction of motion on each segment: dk/dt ∝ q (v_y, −v_x), averaged over its ends.
@@ -197,9 +233,10 @@ def prepare_contour(
     if np.all(along < 0):
         order = np.roll(np.arange(kx.size)[::-1], 1)  # reverse, keeping node 0 first
         kx, ky, vx, vy, tau, speed = (a[order] for a in (kx, ky, vx, vy, tau, speed))
-        dkx = np.roll(kx, -1) - kx
-        dky = np.roll(ky, -1) - ky
-        length = np.hypot(dkx, dky)
+        # The same segments, crossed the other way and in the opposite order.
+        dkx, dky, length = -dkx[::-1], -dky[::-1], length[::-1]
+        if wrap is not None:
+            wrap = -wrap
     elif not np.all(along > 0):
         majority_forward = np.sum(along > 0) >= np.sum(along < 0)
         against = np.flatnonzero(along <= 0 if majority_forward else along >= 0)
@@ -246,6 +283,7 @@ def prepare_contour(
         gamma=_frozen(gamma),
         drift=_frozen(drift),
         charge=charge,
+        period=_frozen(np.zeros(2) if wrap is None else wrap),
     )
 
 

@@ -59,7 +59,7 @@ def conductivity_tensor(
     charge: float = -ELEMENTARY_CHARGE,
     spin_degeneracy: float = 2,
     symmetrize: bool = True,
-    remove_drift: bool = True,
+    remove_drift: Optional[bool] = None,
     period: Optional[Sequence[float]] = None,
     backend: str = "numba",
 ) -> np.ndarray:
@@ -78,8 +78,9 @@ def conductivity_tensor(
         spin_degeneracy: Spin degeneracy g_s.
         symmetrize: Replace σ(B) by ½[σ(B) + σ(−B)ᵀ], which removes the discretisation's
             small breaking of Onsager symmetry (and a spurious 1/B term in low-field R_H).
-        remove_drift: Remove the discretisation drift of a closed orbit's ∮ v dt.
-        period: Reciprocal-lattice vector for open orbits. Not supported yet.
+        remove_drift: Remove the discretisation drift of a closed orbit's ∮ v dt (default:
+            closed contours only; never on open orbits).
+        period: Reciprocal-lattice vector (G_x, G_y) (m⁻¹) of an open orbit, or None.
         backend: "numba" (compiled, parallel over fields) or "python" (plain NumPy, the
             slower reference implementation the numba kernel is tested against).
 
@@ -134,6 +135,18 @@ def conductivity_tensor(
 _SIGMA_COLUMNS = ["sigma_xx", "sigma_xy", "sigma_yx", "sigma_yy"]
 
 
+def _periods(period, n_frames: int) -> list:
+    """One period per contour: None, a single (G_x, G_y) for all, or a list aligned with dfs."""
+    if period is None:
+        return [None] * n_frames
+    items = list(period)
+    if len(items) == 2 and all(np.isscalar(g) for g in items):
+        return [period] * n_frames
+    if len(items) != n_frames:
+        raise ValueError(f"period must be one (G_x, G_y) pair or a list of {n_frames} (one per contour)")
+    return items
+
+
 def conductivity(
     dfs: Union[pd.DataFrame, List[pd.DataFrame]],
     field,
@@ -147,7 +160,7 @@ def conductivity(
     charge: float = -ELEMENTARY_CHARGE,
     spin_degeneracy: float = 2,
     symmetrize: bool = True,
-    remove_drift: bool = True,
+    remove_drift: Optional[bool] = None,
     period=None,
     backend: str = "numba",
 ) -> pd.DataFrame:
@@ -155,9 +168,10 @@ def conductivity(
 
     Solves the Boltzmann equation in the relaxation-time approximation with the
     Shockley–Chambers tube integral, for B along ẑ. It is exact in ω_cτ: every earlier
-    orbit is included. Each DataFrame is one closed Fermi contour: nodes in order
-    around it (either direction, any starting node), with the group velocity at each.
-    Several pockets are combined by summing σ, which is the physically correct way
+    orbit is included. Each DataFrame is one Fermi contour: nodes in order along it
+    (either direction, any starting node), with the group velocity at each. A contour
+    is either closed (a pocket) or, with `period`, one period of an open sheet.
+    Several contours are combined by summing σ, which is the physically correct way
     (averaging ρ is not).
 
     Args:
@@ -175,9 +189,12 @@ def conductivity(
         spin_degeneracy: Spin degeneracy g_s.
         symmetrize: Enforce Onsager symmetry, σ(B) → ½[σ(B) + σ(−B)ᵀ]. This removes a
             small discretisation error, including a spurious 1/B term in low-field R_H.
-        remove_drift: Remove the discretisation drift of each orbit's ∮ v dt, so σ_xx
-            falls as 1/B² at high field instead of levelling off.
-        period: Reserved for open orbits; must be None.
+        remove_drift: Remove the discretisation drift of each closed orbit's ∮ v dt, so
+            σ_xx falls as 1/B² at high field instead of levelling off. The default (None)
+            does this for closed contours only; on open orbits the drift is physical.
+        period: For open orbits, the reciprocal-lattice vector (G_x, G_y) (m⁻¹) that
+            takes the last node of a contour on to its first: one pair for every
+            contour, or a list aligned with `dfs` (None for closed pockets).
         backend: "numba" (compiled, parallel over fields) or "python" (plain NumPy).
 
     Returns:
@@ -197,13 +214,14 @@ def conductivity(
     if not frames:
         raise ValueError("dfs must contain at least one contour")
     fields = np.atleast_1d(np.asarray(field, dtype=np.float64))  # (nB,)
+    periods = _periods(period, len(frames))
     total = np.zeros((fields.size, 2, 2))
-    for frame in frames:
+    for frame, frame_period in zip(frames, periods):
         tau_values = frame[tau] if isinstance(tau, str) else float(tau)
         total += conductivity_tensor(
             frame[kx], frame[ky], frame[vx], frame[vy], tau_values, fields,
             layer_spacing=layer_spacing, charge=charge, spin_degeneracy=spin_degeneracy,
-            symmetrize=symmetrize, remove_drift=remove_drift, period=period, backend=backend,
+            symmetrize=symmetrize, remove_drift=remove_drift, period=frame_period, backend=backend,
         )
     result = pd.DataFrame(total.reshape(fields.size, 4), columns=_SIGMA_COLUMNS)
     result.insert(0, "field", fields)

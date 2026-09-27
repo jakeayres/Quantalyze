@@ -322,3 +322,24 @@ def test_k8_arbitrary_closed_pocket(backend, pocket):
     change = abs(rho_xx[1] / rho_xx[0] - 1)
     print(f"K8 {pocket}: rho_xx change between xbar = 1e3 and 2e3: {change:.1e}")
     assert change < 1e-3
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_k11_flat_open_sheets(backend):
+    """K11: two flat sheets at k_x = ±k₀ spanning one period G, v = ±v₀ x̂, constant τ. The
+    field moves carriers along the sheet without changing v, so σ is field-independent:
+    σ_xx(B) = σ_xx(0) = 2·g_s e²τv₀G/(4π²ħd) at every B, and σ_xy = σ_yy = 0. Tolerance 1e-12."""
+    from quantalyze.core.constants import HBAR
+
+    k0, v0, g = 5e9, 2e5, 2 * np.pi / 3.87e-10
+    sheets = gen.open_sheets(N, k0=k0, velocity=v0, tau=TAU, period=g)
+    x = np.array([0.0, 0.01, 1.0, 100.0, 1e4])
+    per_tesla = E * v0 * TAU / (HBAR * g) * 2 * np.pi  # ω_cτ per T: one period takes ħG/(eBv₀)
+    fields = np.concatenate([x, -x[1:]]) / per_tesla
+    s = bz.conductivity(sheets, fields, layer_spacing=D, period=(0.0, g), backend=backend)
+    expected = 2 * 2 * E**2 * TAU * v0 * g / (4 * np.pi**2 * HBAR * D)
+    xx_error = np.max(np.abs(s.sigma_xx / expected - 1))
+    others = np.max(np.abs(s[["sigma_xy", "sigma_yx", "sigma_yy"]].to_numpy())) / expected
+    print(f"K11: sigma_xx expected {expected:.8e}, actual {s.sigma_xx.iloc[3]:.8e}, max rel error {xx_error:.1e}; "
+          f"max |sigma_xy, sigma_yx, sigma_yy| / sigma_xx = {others:.1e}")
+    assert xx_error <= 1e-12 and others <= 1e-12
