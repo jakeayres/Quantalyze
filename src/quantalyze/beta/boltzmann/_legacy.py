@@ -1,5 +1,5 @@
 
-from ..core.constants import HBAR, ELEMENTARY_CHARGE
+from ...core.constants import HBAR, ELEMENTARY_CHARGE
 import numpy as np
 from numba import njit
 

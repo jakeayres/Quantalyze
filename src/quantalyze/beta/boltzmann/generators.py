@@ -1,0 +1,404 @@
+"""Fermi-surface contours as DataFrames.
+
+Two kinds of generator:
+
+- **From your own band:** `from_dispersion` traces the pocket ε(k) = 0 of any
+  dispersion you supply, and `polar` builds a pocket of any shape from k_F(φ).
+- **Analytic test pockets:** `circle`, `ellipse`, `tight_binding` and
+  `open_sheets`, whose exact answers are known.
+
+Every generator returns the columns `kx`, `ky` (m⁻¹), `vx`, `vy` (m/s) and
+`tau` (s), with the velocity the true group velocity v = ∇ε/ħ at each node.
+Closed contours are returned as N distinct nodes (no repeated closing point),
+in counter-clockwise order of the polar angle about the pocket centre.
+
+`tau` may be a float, or a function of the polar angle φ (rad) of each node
+about the pocket centre, such as the models in
+`quantalyze.beta.boltzmann.scattering`.
+
+Examples:
+    >>> from quantalyze.beta import boltzmann as bz
+    >>> from quantalyze.core.constants import ELECTRON_MASS
+    >>> df = bz.generators.circle(512, k_fermi=7e9, mass=ELECTRON_MASS, tau=1e-13)
+    >>> list(df.columns)
+    ['kx', 'ky', 'vx', 'vy', 'tau']
+"""
+from __future__ import annotations
+
+from typing import Callable, Optional, Sequence, Tuple, Union
+
+import numpy as np
+import pandas as pd
+from scipy.optimize import brentq
+
+from ...core.constants import HBAR
+
+Tau = Union[float, Callable[[np.ndarray], np.ndarray]]
+
+_CARRIER_SIGN = {"electron": 1.0, "hole": -1.0}
+
+
+def _carrier_sign(carrier: str) -> float:
+    try:
+        return _CARRIER_SIGN[carrier]
+    except KeyError:
+        raise ValueError(f"carrier must be 'electron' or 'hole', not {carrier!r}") from None
+
+
+def _polar_angles(n_points: int) -> np.ndarray:
+    return 2 * np.pi * np.arange(n_points) / n_points  # (N,)
+
+
+def _tau_column(tau: Tau, phi: np.ndarray) -> np.ndarray:
+    if callable(tau):
+        values = np.asarray(tau(phi), dtype=np.float64)
+    else:
+        values = np.full(phi.shape, float(tau))
+    return np.broadcast_to(values, phi.shape).astype(np.float64)  # (N,)
+
+
+def _frame(kx, ky, vx, vy, tau) -> pd.DataFrame:
+    return pd.DataFrame({
+        "kx": np.asarray(kx, dtype=np.float64),
+        "ky": np.asarray(ky, dtype=np.float64),
+        "vx": np.asarray(vx, dtype=np.float64),
+        "vy": np.asarray(vy, dtype=np.float64),
+        "tau": np.asarray(tau, dtype=np.float64),
+    })
+
+
+def circle(n_points: int, *, k_fermi: float, mass: float, tau: Tau, carrier: str = "electron") -> pd.DataFrame:
+    """Circular pocket of a parabolic band, ε = ±ħ²(k² − k_F²)/2m.
+
+    For electrons the velocity v = ħk/m points outwards; for holes the band is
+    inverted, so v = −ħk/m points inwards.
+
+    Args:
+        n_points: Number of nodes N, evenly spaced in angle.
+        k_fermi: Fermi wavevector k_F (m⁻¹).
+        mass: Band mass m (kg).
+        tau: Relaxation time (s), as a float or a function of the polar angle φ (rad).
+        carrier: "electron" or "hole".
+
+    Returns:
+        DataFrame with columns kx, ky (m⁻¹), vx, vy (m/s) and tau (s).
+
+    Examples:
+        >>> from quantalyze.beta import boltzmann as bz
+        >>> from quantalyze.core.constants import ELECTRON_MASS
+        >>> df = bz.generators.circle(512, k_fermi=7e9, mass=ELECTRON_MASS, tau=1e-13, carrier="hole")
+    """
+    sign = _carrier_sign(carrier)
+    phi = _polar_angles(n_points)
+    kx, ky = k_fermi * np.cos(phi), k_fermi * np.sin(phi)
+    speed = sign * HBAR * k_fermi / mass
+    return _frame(kx, ky, speed * np.cos(phi), speed * np.sin(phi), _tau_column(tau, phi))
+
+
+def ellipse(
+    n_points: int,
+    *,
+    k_fermi: float,
+    mass_x: float,
+    mass_y: float,
+    tau: Tau,
+    rotation: float = 0.0,
+    carrier: str = "electron",
+) -> pd.DataFrame:
+    """Elliptical pocket of an anisotropic parabolic band.
+
+    In its principal frame ε = ±[ħ²k_x²/2m_x + ħ²k_y²/2m_y − ε_F], with ε_F chosen so
+    that the enclosed area is πk_F² (the same carrier density as a circle of radius
+    k_F). The semi-axes are k_F(m_x/m_y)^¼ along x and k_F(m_y/m_x)^¼ along y, and
+    v = ±ħ(k_x/m_x, k_y/m_y). The whole pocket (k and v) is then rotated by `rotation`
+    about ẑ. Nodes are evenly spaced in the ellipse's parametric angle.
+
+    Args:
+        n_points: Number of nodes N.
+        k_fermi: Geometric-mean Fermi wavevector √(k_a k_b) (m⁻¹).
+        mass_x: Band mass along the principal x axis (kg).
+        mass_y: Band mass along the principal y axis (kg).
+        tau: Relaxation time (s), as a float or a function of the polar angle φ (rad).
+        rotation: Angle of the principal x axis from the lab x axis (rad).
+        carrier: "electron" or "hole".
+
+    Returns:
+        DataFrame with columns kx, ky (m⁻¹), vx, vy (m/s) and tau (s).
+
+    Examples:
+        >>> from quantalyze.beta import boltzmann as bz
+        >>> from quantalyze.core.constants import ELECTRON_MASS
+        >>> df = bz.generators.ellipse(512, k_fermi=7e9, mass_x=ELECTRON_MASS,
+        ...                            mass_y=4 * ELECTRON_MASS, tau=1e-13)
+    """
+    sign = _carrier_sign(carrier)
+    t = _polar_angles(n_points)
+    ratio = (mass_x / mass_y) ** 0.25
+    qx, qy = k_fermi * ratio * np.cos(t), k_fermi / ratio * np.sin(t)  # principal frame
+    ux, uy = sign * HBAR * qx / mass_x, sign * HBAR * qy / mass_y
+    c, s = np.cos(rotation), np.sin(rotation)
+    kx, ky = c * qx - s * qy, s * qx + c * qy
+    vx, vy = c * ux - s * uy, s * ux + c * uy
+    return _frame(kx, ky, vx, vy, _tau_column(tau, np.arctan2(ky, kx)))
+
+
+def _spectral_derivative(values: np.ndarray) -> np.ndarray:
+    """d/dφ of a smooth periodic function sampled at φ_j = 2πj/N."""
+    n = values.size
+    wavenumber = np.fft.fftfreq(n, d=1.0 / n)  # integers 0, 1, ..., −1
+    if n % 2 == 0:
+        wavenumber[n // 2] = 0.0  # Nyquist mode has no well-defined derivative
+    return np.fft.ifft(1j * wavenumber * np.fft.fft(values)).real
+
+
+def polar(
+    n_points: int,
+    *,
+    k_fermi: Callable[[np.ndarray], np.ndarray],
+    mass: float,
+    tau: Tau,
+    dk_fermi: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+    carrier: str = "electron",
+) -> pd.DataFrame:
+    """Star-shaped pocket of any shape, given its Fermi wavevector k_F(φ).
+
+    The dispersion is ε = ±ħ²(k² − k_F(φ)²)/2m, so on the contour
+    v = ±(ħ/m)(k_F r̂ − k_F′(φ) φ̂), which is normal to the contour but not radial.
+    Energy contours of this band enclose A(ε) = A_F + 2πmε/ħ², so m is exactly the
+    cyclotron mass of the pocket whatever its shape.
+
+    Args:
+        n_points: Number of nodes N, evenly spaced in polar angle.
+        k_fermi: Function returning k_F(φ) (m⁻¹) for an array of angles φ (rad).
+            It must be positive and 2π-periodic.
+        mass: Cyclotron mass m (kg).
+        tau: Relaxation time (s), as a float or a function of the polar angle φ (rad).
+        dk_fermi: Function returning dk_F/dφ (m⁻¹ per rad). If omitted, it is found by
+            spectral differentiation of the N samples of k_F, which is accurate to
+            rounding when k_F(φ) is smooth and resolved by the N points.
+        carrier: "electron" (v outwards) or "hole" (v inwards).
+
+    Returns:
+        DataFrame with columns kx, ky (m⁻¹), vx, vy (m/s) and tau (s).
+
+    Raises:
+        ValueError: If k_F(φ) is not positive at every node.
+
+    Examples:
+        A rounded-square pocket, k_F(φ) = k₀ − k₄ cos4φ:
+
+        >>> import numpy as np
+        >>> from quantalyze.beta import boltzmann as bz
+        >>> from quantalyze.core.constants import ELECTRON_MASS
+        >>> df = bz.generators.polar(
+        ...     512, k_fermi=lambda phi: 7.35e9 - 0.25e9 * np.cos(4 * phi),
+        ...     mass=5 * ELECTRON_MASS, tau=1e-13, carrier="hole")
+    """
+    sign = _carrier_sign(carrier)
+    phi = _polar_angles(n_points)
+    kf = np.broadcast_to(np.asarray(k_fermi(phi), dtype=np.float64), phi.shape)  # (N,)
+    if not np.all(kf > 0):
+        raise ValueError("k_fermi(φ) must be positive at every angle")
+    if dk_fermi is None:
+        dkf = _spectral_derivative(kf)  # (N,)
+    else:
+        dkf = np.broadcast_to(np.asarray(dk_fermi(phi), dtype=np.float64), phi.shape)
+    cos, sin = np.cos(phi), np.sin(phi)
+    v_radial = sign * HBAR * kf / mass
+    v_angular = -sign * HBAR * dkf / mass
+    vx = v_radial * cos - v_angular * sin
+    vy = v_radial * sin + v_angular * cos
+    return _frame(kf * cos, kf * sin, vx, vy, _tau_column(tau, phi))
+
+
+def from_dispersion(
+    n_points: int,
+    *,
+    energy: Callable[[np.ndarray, np.ndarray], np.ndarray],
+    gradient: Callable[[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray]],
+    tau: Tau,
+    max_radius: Union[float, Callable[[float], float]],
+    center: Sequence[float] = (0.0, 0.0),
+) -> pd.DataFrame:
+    """Closed pocket of any band ε(k), traced by root-finding along rays.
+
+    The Fermi contour ε(k) = 0 about `center` is found along N rays evenly spaced in
+    polar angle, so the pocket must be star-shaped about the centre (each ray crosses
+    it exactly once) and lie within `max_radius` of it. The velocity is
+    v = ∇ε/ħ from the supplied gradient, so whether the pocket is electron- or
+    hole-like follows from the band itself.
+
+    Args:
+        n_points: Number of nodes N, evenly spaced in polar angle about `center`.
+        energy: Function ε(k_x, k_y) (J) measured from the Fermi level, vectorised
+            over NumPy arrays of k_x, k_y (m⁻¹).
+        gradient: Function returning (∂ε/∂k_x, ∂ε/∂k_y) (J·m) for arrays k_x, k_y (m⁻¹).
+        tau: Relaxation time (s), as a float or a function of the polar angle φ (rad)
+            about `center`.
+        max_radius: How far from the centre to search along each ray (m⁻¹), as a float
+            or a function of φ (rad). The pocket must close within it.
+        center: Pocket centre (k_x, k_y) (m⁻¹).
+
+    Returns:
+        DataFrame with columns kx, ky (m⁻¹), vx, vy (m/s) and tau (s).
+
+    Raises:
+        ValueError: If the pocket is not closed within `max_radius`, or not star-shaped,
+            about `center`.
+
+    Examples:
+        A parabolic band with a fourfold quartic correction:
+
+        >>> import numpy as np
+        >>> from quantalyze.beta import boltzmann as bz
+        >>> from quantalyze.core.constants import ELECTRON_MASS, HBAR
+        >>> c2, c4, ef = HBAR**2 / (2 * ELECTRON_MASS), 2e-59, 1.9e-19
+        >>> df = bz.generators.from_dispersion(
+        ...     512, tau=1e-13, max_radius=2e10,
+        ...     energy=lambda kx, ky: c2 * (kx**2 + ky**2) + c4 * (kx**4 + ky**4) - ef,
+        ...     gradient=lambda kx, ky: (2 * c2 * kx + 4 * c4 * kx**3, 2 * c2 * ky + 4 * c4 * ky**3))
+    """
+    cx, cy = (float(c) for c in center)
+    energy_centre = float(energy(np.array(cx), np.array(cy)))
+    if energy_centre == 0:
+        raise ValueError("the Fermi level passes through the pocket centre")
+
+    phi = _polar_angles(n_points)
+    radius = np.empty(n_points)  # |k − centre|, (N,)
+    samples = np.linspace(0.0, 1.0, 65)[1:]  # (64,)
+    for i, angle in enumerate(phi):
+        c, s = np.cos(angle), np.sin(angle)
+        r_max = float(max_radius(angle)) if callable(max_radius) else float(max_radius)
+        along_ray = energy(cx + samples * r_max * c, cy + samples * r_max * s)  # (64,)
+        crossings = np.count_nonzero(np.diff(np.sign(np.concatenate(([energy_centre], along_ray)))))
+        if crossings == 0:
+            raise ValueError(
+                f"no Fermi crossing within max_radius of the centre at φ = {angle:.3f} rad: "
+                "the pocket is open, absent or larger than max_radius"
+            )
+        if crossings > 1:
+            raise ValueError(f"the pocket is not star-shaped about the centre (φ = {angle:.3f} rad)")
+        radius[i] = brentq(lambda r: energy(cx + r * c, cy + r * s), 0.0, r_max,
+                           xtol=1e-15 * r_max, rtol=4 * np.finfo(float).eps)
+
+    kx = cx + radius * np.cos(phi)
+    ky = cy + radius * np.sin(phi)
+    grad_x, grad_y = gradient(kx, ky)
+    return _frame(kx, ky, np.asarray(grad_x) / HBAR, np.asarray(grad_y) / HBAR, _tau_column(tau, phi))
+
+
+def tight_binding(
+    n_points: int,
+    *,
+    tau: Tau,
+    lattice_constant: float,
+    hopping: float,
+    chemical_potential: float,
+    next_hopping: float = 0.0,
+    third_hopping: float = 0.0,
+    center: Sequence[float] = (0.0, 0.0),
+) -> pd.DataFrame:
+    """Closed pocket of a square-lattice tight-binding band.
+
+    ε(k) = −2t(cos k_xa + cos k_ya) − 4t′ cos k_xa cos k_ya − 2t″(cos 2k_xa + cos 2k_ya) − μ.
+
+    A convenience wrapper around `from_dispersion`: the pocket must be star-shaped
+    about `center` and closed inside the square of half-width π/a around it.
+
+    Args:
+        n_points: Number of nodes N, evenly spaced in polar angle about `center`.
+        tau: Relaxation time (s), as a float or a function of the polar angle φ (rad)
+            about `center`.
+        lattice_constant: Lattice constant a (m).
+        hopping: Nearest-neighbour hopping t (J).
+        chemical_potential: Chemical potential μ (J).
+        next_hopping: Next-nearest-neighbour hopping t′ (J).
+        third_hopping: Third-neighbour hopping t″ (J).
+        center: Pocket centre (k_x, k_y) (m⁻¹), e.g. (π/a, π/a) for a hole pocket
+            about the zone corner.
+
+    Returns:
+        DataFrame with columns kx, ky (m⁻¹), vx, vy (m/s) and tau (s).
+
+    Raises:
+        ValueError: If the pocket is not closed, or not star-shaped, about `center`.
+
+    Examples:
+        >>> import numpy as np
+        >>> from quantalyze.beta import boltzmann as bz
+        >>> a = bz.units.angstrom_to_meter(3.87)
+        >>> df = bz.generators.tight_binding(
+        ...     512, tau=1e-13, lattice_constant=a,
+        ...     hopping=bz.units.ev_to_joule(0.25), next_hopping=bz.units.ev_to_joule(-0.0625),
+        ...     chemical_potential=0.0, center=(np.pi / a, np.pi / a))
+    """
+    a = lattice_constant
+    t1, t2, t3, mu = hopping, next_hopping, third_hopping, chemical_potential
+
+    def energy(kx, ky):
+        x, y = kx * a, ky * a
+        return (
+            -2 * t1 * (np.cos(x) + np.cos(y))
+            - 4 * t2 * np.cos(x) * np.cos(y)
+            - 2 * t3 * (np.cos(2 * x) + np.cos(2 * y))
+            - mu
+        )
+
+    def gradient(kx, ky):
+        x, y = kx * a, ky * a
+        return (
+            a * (2 * t1 * np.sin(x) + 4 * t2 * np.sin(x) * np.cos(y) + 4 * t3 * np.sin(2 * x)),
+            a * (2 * t1 * np.sin(y) + 4 * t2 * np.cos(x) * np.sin(y) + 4 * t3 * np.sin(2 * y)),
+        )
+
+    def half_cell(angle):  # distance to the edge of the square of half-width π/a
+        return (np.pi / a) / max(abs(np.cos(angle)), abs(np.sin(angle)))
+
+    return from_dispersion(n_points, energy=energy, gradient=gradient, tau=tau,
+                           max_radius=half_cell, center=center)
+
+
+def open_sheets(
+    n_points: int,
+    *,
+    k0: float,
+    velocity: float,
+    tau: Tau,
+    period: float,
+    warping: float = 0.0,
+) -> list:
+    """A pair of open Fermi sheets near k_x = ±k0, periodic in k_y.
+
+    Sheet s = ±1 is the zero of ε = ħv₀(s k_x − k0 − δ cos(2πk_y/G)), so it sits at
+    k_x = s(k0 + δ cos(2πk_y/G)) with v = (s v₀, v₀ δ (2π/G) sin(2πk_y/G)). With δ = 0
+    the sheets are flat and v = ±v₀ x̂. Each sheet has N nodes at k_y = −G/2 + jG/N,
+    j = 0…N−1, so its last segment ends at the first node shifted by G ŷ.
+
+    Args:
+        n_points: Number of nodes N per sheet.
+        k0: Mean distance of the sheets from k_x = 0 (m⁻¹).
+        velocity: Speed v₀ normal to the flat sheets (m/s).
+        tau: Relaxation time (s), as a float or a function of the polar angle φ (rad)
+            of each node about the origin.
+        period: Reciprocal-lattice period G along k_y (m⁻¹).
+        warping: Warping amplitude δ (m⁻¹).
+
+    Returns:
+        List of two DataFrames, the sheet at +k0 then the sheet at −k0, each with
+        columns kx, ky (m⁻¹), vx, vy (m/s) and tau (s).
+
+    Examples:
+        >>> import numpy as np
+        >>> from quantalyze.beta import boltzmann as bz
+        >>> plus, minus = bz.generators.open_sheets(512, k0=5e9, velocity=2e5, tau=1e-13,
+        ...                                          period=2 * np.pi / 3.87e-10)
+    """
+    b = 2 * np.pi / period
+    ky = period * (np.arange(n_points) / n_points - 0.5)  # (N,)
+    sheets = []
+    for side in (1.0, -1.0):
+        kx = side * (k0 + warping * np.cos(b * ky))
+        vx = np.full(n_points, side * velocity)
+        vy = velocity * warping * b * np.sin(b * ky)
+        sheets.append(_frame(kx, ky, vx, vy, _tau_column(tau, np.arctan2(ky, kx))))
+    return sheets
