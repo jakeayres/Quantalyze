@@ -249,21 +249,51 @@ def prepare_contour(
     )
 
 
-def enclosed_area(kx, ky):
-    """Area enclosed by a smoothly sampled closed contour (m⁻²).
+# Gauss–Legendre on [0, 1]: three points integrate the degree-5 Green's-theorem
+# integrand of a cubic segment exactly.
+_GL3_U = 0.5 * (1 + np.array([-np.sqrt(3 / 5), 0.0, np.sqrt(3 / 5)]))
+_GL3_W = 0.5 * np.array([5 / 9, 8 / 9, 5 / 9])
 
-    Treats the nodes as samples of a smooth periodic curve k(θ), θ_j = 2πj/N,
-    differentiates spectrally, and applies the trapezoid rule to
-    A = ½∮(k_x dk_y − k_y dk_x). Both steps are spectrally accurate for smooth
-    periodic curves, so a uniformly sampled circle gives πk_F² to rounding
-    (a polygon/shoelace area would only be O(N⁻²)).
+
+def enclosed_area(kx, ky, vx, vy) -> float:
+    """Area enclosed by a closed Fermi contour, using the velocities for the curvature (m⁻²).
+
+    The group velocity is normal to the Fermi contour, so each node also gives the
+    contour's tangent direction. Each segment is replaced by the cubic Hermite curve
+    through its two nodes with those tangent directions (scaled by the chord length),
+    and the area follows exactly from Green's theorem, A = ½∮(k_x dk_y − k_y dk_x).
+    The error is O(N⁻⁴), even for irregularly spaced nodes, where a polygon (shoelace)
+    area is only O(N⁻²): about 2e-10 against 2.5e-5 on a circle with N = 512.
+
+    Args:
+        kx: Node wavevectors k_x (m⁻¹), in order around the contour (either direction).
+        ky: Node wavevectors k_y (m⁻¹).
+        vx: Group velocities v_x at the nodes (m/s); only their direction is used.
+        vy: Group velocities v_y (m/s).
+
+    Returns:
+        The enclosed area (m⁻²), positive.
     """
-    kx = np.asarray(kx, dtype=float) - np.mean(kx)
-    ky = np.asarray(ky, dtype=float) - np.mean(ky)
-    n = kx.size
-    wavenumber = np.fft.fftfreq(n, d=1.0 / n)  # integers 0, 1, ..., −1
-    if n % 2 == 0:
-        wavenumber[n // 2] = 0.0  # Nyquist mode has no well-defined derivative
-    dkx = np.fft.ifft(1j * wavenumber * np.fft.fft(kx)).real  # dk_x/dθ
-    dky = np.fft.ifft(1j * wavenumber * np.fft.fft(ky)).real  # dk_y/dθ
-    return abs(0.5 * np.sum(kx * dky - ky * dkx) * (2 * np.pi / n))
+    kx = np.asarray(kx, dtype=np.float64)
+    ky = np.asarray(ky, dtype=np.float64)
+    kx, ky = kx - np.mean(kx), ky - np.mean(ky)  # centre first: less cancellation
+    speed = np.hypot(vx, vy)
+    tx, ty = -np.asarray(vy) / speed, np.asarray(vx) / speed  # unit tangents, up to sign
+    x1, y1 = np.roll(kx, -1), np.roll(ky, -1)
+    cx, cy = x1 - kx, y1 - ky  # chords, (N,)
+    chord = np.hypot(cx, cy)
+    tx1, ty1 = np.roll(tx, -1), np.roll(ty, -1)
+    # Point each tangent along its segment, and scale it by the chord length.
+    start = np.sign(tx * cx + ty * cy) * chord
+    end = np.sign(tx1 * cx + ty1 * cy) * chord
+    m0x, m0y, m1x, m1y = start * tx, start * ty, end * tx1, end * ty1
+    total = 0.0
+    for u, w in zip(_GL3_U, _GL3_W):
+        h00, h10, h01, h11 = 2 * u**3 - 3 * u**2 + 1, u**3 - 2 * u**2 + u, -2 * u**3 + 3 * u**2, u**3 - u**2
+        d00, d10, d01, d11 = 6 * u**2 - 6 * u, 3 * u**2 - 4 * u + 1, -6 * u**2 + 6 * u, 3 * u**2 - 2 * u
+        x = h00 * kx + h10 * m0x + h01 * x1 + h11 * m1x
+        y = h00 * ky + h10 * m0y + h01 * y1 + h11 * m1y
+        dx = d00 * kx + d10 * m0x + d01 * x1 + d11 * m1x
+        dy = d00 * ky + d10 * m0y + d01 * y1 + d11 * m1y
+        total += w * np.sum(x * dy - y * dx)
+    return abs(0.5 * total)

@@ -21,7 +21,6 @@ from quantalyze.beta.boltzmann import units
 from quantalyze.core.constants import ELECTRON_MASS, ELEMENTARY_CHARGE, HBAR
 
 from quantalyze.beta.boltzmann import _analytic as an
-from quantalyze.beta.boltzmann._contour import enclosed_area
 
 E = ELEMENTARY_CHARGE
 N = 512
@@ -278,7 +277,7 @@ def test_generators_reject_bad_arguments():
                 rotation=np.pi / 6),
 ], ids=["circle-electron", "circle-hole", "circle-N16", "ellipse-rotated"])
 def test_circle_and_ellipse_enclose_pi_kf_squared(df):
-    area = enclosed_area(df["kx"], df["ky"])
+    area = an.spectral_area(df["kx"], df["ky"])
     error = abs(area / (np.pi * K_F**2) - 1)
     print(f"area / (pi k_F^2) - 1 = {error:.2e}")
     assert error < 1e-12
@@ -290,7 +289,7 @@ def test_circle_and_ellipse_enclose_pi_kf_squared(df):
 ], ids=["fourfold", "lopsided"])
 def test_polar_encloses_its_analytic_area(k_fermi, expected):
     df = gen.polar(N, k_fermi=k_fermi, mass=POLAR_MASS, tau=TAU)
-    error = abs(enclosed_area(df["kx"], df["ky"]) / expected - 1)
+    error = abs(an.spectral_area(df["kx"], df["ky"]) / expected - 1)
     print(f"polar area relative error = {error:.2e}")
     assert error < 1e-12
 
@@ -335,7 +334,7 @@ def test_tight_binding_area_matches_numerical_area(pocket):
         df = _tb_m()
         expected = _slice_area(
             lambda qx, qy: -eps_tight_binding((np.pi + qx) / A, (np.pi + qy) / A, mu=MU_HOLE)) / A**2
-    area = enclosed_area(df["kx"], df["ky"])
+    area = an.spectral_area(df["kx"], df["ky"])
     error = abs(area / expected - 1)
     print(f"tight-binding {pocket}: area = {area:.10e} m^-2, numerical = {expected:.10e}, "
           f"relative error = {error:.2e}")

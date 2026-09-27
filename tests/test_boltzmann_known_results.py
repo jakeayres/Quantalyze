@@ -4,16 +4,15 @@ Each test is parametrised over the backend, gives the expected formula and its s
 in its docstring, and prints expected, actual and relative error. Unless noted,
 N = 512, g_s = 2, d = 1 nm and ω_cτ ∈ {0.01, 0.1, 1, 10, 100}. A failure here is a
 physics bug until proven otherwise: do not loosen a tolerance.
-
-Tests that need ρ, R_H or several pockets arrive with the public response functions;
-this file currently holds the σ-level results.
 """
 import numpy as np
 import pytest
 
+from quantalyze.beta import boltzmann as bz
 from quantalyze.beta.boltzmann import _analytic as an
 from quantalyze.beta.boltzmann import generators as gen
 from quantalyze.beta.boltzmann import scattering as sc
+from quantalyze.beta.boltzmann._contour import prepare_contour
 from quantalyze.beta.boltzmann._response import conductivity_tensor
 from quantalyze.core.constants import ELECTRON_MASS, ELEMENTARY_CHARGE
 
@@ -170,3 +169,156 @@ def test_k10_invariances(backend):
     print("K10: " + ", ".join(f"{k} {v:.1e}" for k, v in errors.items()))
     assert errors["start index"] <= 1e-12 and errors["reversed"] <= 1e-12 and errors["rotation"] <= 1e-12
     assert errors["N -> 2N"] < 1e-4
+
+
+# ---------------------------------------------------------------------------
+# ρ, R_H, MR and several pockets, through the public API
+# ---------------------------------------------------------------------------
+
+def transport(dfs, fields, backend, **kwargs):
+    """σ DataFrame plus ρ_xx, ρ_yy and R_H arrays."""
+    kwargs.setdefault("layer_spacing", D)
+    s = bz.conductivity(dfs, fields, backend=backend, **kwargs)
+    rho = bz.resistivity(s)
+    return s, rho["rho_xx"].to_numpy(), rho["rho_yy"].to_numpy(), bz.hall_coefficient(s).to_numpy()
+
+
+def orbit_x(df, field):
+    """ω_cτ averaged round the orbit: 2π|B| / Σ γ_n s_n, i.e. 2π over the damping per orbit.
+    It is eBτ/m for a circle with constant τ."""
+    c = prepare_contour(df["kx"], df["ky"], df["vx"], df["vy"], df["tau"])
+    return 2 * np.pi * np.abs(field) / np.sum(c.gamma * c.s)
+
+
+def print_check(label, expected, actual):
+    error = np.max(np.abs(np.asarray(actual) / np.asarray(expected) - 1))
+    print(f"{label}: expected {np.ravel(expected)[0]:.8e}, actual {np.ravel(actual)[0]:.8e}, "
+          f"max rel error {error:.1e}")
+    return error
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_k1_no_magnetoresistance_and_constant_hall_coefficient(backend):
+    """K1: for an isotropic Drude metal ρ_xx(B) = m/(ne²τ) at every B (|MR| < 1e-4) and
+    R_H = 1/(nq) = −1/(ne) at every B, including x = 0.01. R_H is unchanged when τ changes
+    by 10³ or when m changes at fixed n. Tolerance 1e-4."""
+    n = an.circle_density(K_F, D)
+    fields = np.concatenate([[0.0], X * M / (E * TAU)])
+    s, rho_xx, _, r_h = transport(gen.circle(N, k_fermi=K_F, mass=M, tau=TAU), fields, backend)
+    mr = bz.magnetoresistance(s).to_numpy()
+    print(f"K1: max |MR| = {np.max(np.abs(mr)):.1e}")
+    assert np.max(np.abs(mr)) < 1e-4
+    assert print_check("K1 rho_xx = m/(ne^2 tau)", M / (n * E**2 * TAU), rho_xx) < 1e-4
+    assert print_check("K1 R_H = -1/(ne)", -1 / (n * E), r_h[1:]) < 1e-4
+    for label, df in [("tau x 1e3", gen.circle(N, k_fermi=K_F, mass=M, tau=1e3 * TAU)),
+                      ("m x 3 at fixed n", gen.circle(N, k_fermi=K_F, mass=3 * M, tau=TAU))]:
+        other = transport(df, fields[1:], backend)[3]
+        assert print_check(f"K1 R_H with {label}", -1 / (n * E), other) < 1e-4
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_k2_hole_hall_coefficient(backend):
+    """K2: a hole circle (v inwards) has R_H = +1/(ne) at every B. Tolerance 1e-4."""
+    n = an.circle_density(K_F, D)
+    r_h = transport(gen.circle(N, k_fermi=K_F, mass=M, tau=TAU, carrier="hole"), X * M / (E * TAU), backend)[3]
+    assert print_check("K2 R_H = +1/(ne)", 1 / (n * E), r_h) < 1e-4
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_k3_hall_and_magnetoresistance_at_zero_field(backend):
+    """K3: R_H is NaN at B = 0 (undefined), and MR(0) = 0 exactly."""
+    s = bz.conductivity(gen.circle(N, k_fermi=K_F, mass=M, tau=TAU), [0.0, 1.0], layer_spacing=D, backend=backend)
+    r_h, mr = bz.hall_coefficient(s), bz.magnetoresistance(s)
+    print(f"K3: R_H(0) = {r_h.iloc[0]}, MR(0) = {mr.iloc[0]}")
+    assert np.isnan(r_h.iloc[0]) and mr.iloc[0] == 0.0
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_k4_no_magnetoresistance_along_either_axis(backend):
+    """K4: for the anisotropic-mass ellipse ρ_xx = m_x/(ne²τ) and ρ_yy = m_y/(ne²τ) at every B,
+    and R_H = −1/(ne). Tolerance 1e-4."""
+    mx, my = M, 4 * M
+    n = an.circle_density(K_F, D)
+    fields = np.concatenate([[0.0], X * np.sqrt(mx * my) / (E * TAU)])
+    _, rho_xx, rho_yy, r_h = transport(gen.ellipse(N, k_fermi=K_F, mass_x=mx, mass_y=my, tau=TAU), fields, backend)
+    assert print_check("K4 rho_xx = m_x/(ne^2 tau)", mx / (n * E**2 * TAU), rho_xx) < 1e-4
+    assert print_check("K4 rho_yy = m_y/(ne^2 tau)", my / (n * E**2 * TAU), rho_yy) < 1e-4
+    assert print_check("K4 R_H = -1/(ne)", -1 / (n * E), r_h[1:]) < 1e-4
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_k5_compensated_two_band(backend):
+    """K5: electron circle (m_e, τ) plus hole circle (2m_e, τ/2) with n_e = n_h = n. σ is the
+    sum of the two Drude tensors; ρ_xx(B) = (1 + μ_eμ_h B²)/(ne(μ_e+μ_h)) grows as B² without
+    saturating; R_H = (μ_h − μ_e)/(ne(μ_e+μ_h)) at every B (two-band Drude model). Tolerance 1e-4."""
+    n = an.circle_density(K_F, D)
+    mu_e, mu_h = E * TAU / M, E * (TAU / 2) / (2 * M)
+    pockets = [gen.circle(N, k_fermi=K_F, mass=M, tau=TAU),
+               gen.circle(N, k_fermi=K_F, mass=2 * M, tau=TAU / 2, carrier="hole")]
+    fields = X / mu_e
+    s, rho_xx, _, r_h = transport(pockets, fields, backend)
+    expected = an.two_band(fields, n_e=n, mu_e=mu_e, n_h=n, mu_h=mu_h)
+    actual = s[["sigma_xx", "sigma_xy", "sigma_yx", "sigma_yy"]].to_numpy().reshape(-1, 2, 2)
+    assert report("K5", X, actual, expected).max() < 1e-4
+    assert print_check("K5 rho_xx", (1 + mu_e * mu_h * fields**2) / (n * E * (mu_e + mu_h)), rho_xx) < 1e-4
+    assert print_check("K5 R_H", (mu_h - mu_e) / (n * E * (mu_e + mu_h)), r_h) < 1e-4
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_k6_uncompensated_two_band(backend):
+    """K6: electron circle (n_e, μ_e) plus hole circle (n_h = n_e/2, μ_h = μ_e/2). ρ = (σ_e + σ_h)⁻¹
+    from the analytic Drude tensors at every B; R_H(0) = (n_hμ_h² − n_eμ_e²)/(e(n_hμ_h + n_eμ_e)²)
+    (at μB = 10⁻³) and R_H(∞) = 1/((n_h − n_e)e) at μB = 10³. Tolerance 1e-4."""
+    k_h = K_F / np.sqrt(2)
+    n_e, n_h = an.circle_density(K_F, D), an.circle_density(k_h, D)
+    mu_e, mu_h = E * TAU / M, E * TAU / (2 * M)
+    params = dict(n_e=n_e, mu_e=mu_e, n_h=n_h, mu_h=mu_h)
+    pockets = [gen.circle(N, k_fermi=K_F, mass=M, tau=TAU),
+               gen.circle(N, k_fermi=k_h, mass=2 * M, tau=TAU, carrier="hole")]
+    fields = np.concatenate([X / mu_e, [1e-3 / mu_e, 1e3 / mu_h]])
+    s, _, _, r_h = transport(pockets, fields, backend)
+    rho = bz.resistivity(s)[["rho_xx", "rho_xy", "rho_yx", "rho_yy"]].to_numpy().reshape(-1, 2, 2)
+    expected_rho = an.resistivity(an.two_band(fields[:5], **params))
+    assert report("K6 rho", X, rho[:5], expected_rho).max() < 1e-4
+    low = (n_h * mu_h**2 - n_e * mu_e**2) / (E * (n_h * mu_h + n_e * mu_e) ** 2)
+    assert print_check("K6 R_H(0) at mu B = 1e-3", low, r_h[5]) < 1e-4
+    assert print_check("K6 R_H(inf) at mu B = 1e3", 1 / ((n_h - n_e) * E), r_h[6]) < 1e-4
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_k7_anisotropic_tau_hall_and_magnetoresistance(backend):
+    """K7: circle with 1/τ = (1/τ₀)(1 + 0.6 cos4φ), N = 1024, x̄ = ω_c⟨τ⟩. Ong: the low-field
+    R_H(x̄ = 10⁻³) = (1/nq)⟨τ²⟩/⟨τ⟩² = 1.25/nq (N. P. Ong, PRB 43, 193 (1991)); at x̄ = 10³,
+    R_H = 1/nq and ρ_xx/ρ_xx(0) = ⟨1/τ⟩⟨τ⟩ = 1.25 (MR saturates at 0.25). MR > 0 and rises
+    monotonically. Tolerance 1e-3."""
+    df = gen.circle(1024, k_fermi=K_F, mass=M, tau=lambda p: sc.cos4phi(p, TAU, anisotropy=0.6))
+    nq = an.circle_density(K_F, D) * (-E)
+    xbar = np.array([1e-3, 0.1, 0.3, 1.0, 3.0, 10.0, 1e3])
+    fields = np.concatenate([[0.0], xbar * M / (E * 1.25 * TAU)])
+    s, rho_xx, _, r_h = transport(df, fields, backend)
+    mr = bz.magnetoresistance(s).to_numpy()[1:]
+    assert print_check("K7 R_H(1e-3) = 1.25/nq", 1.25 / nq, r_h[1]) < 1e-3
+    assert print_check("K7 R_H(1e3) = 1/nq", 1 / nq, r_h[-1]) < 1e-3
+    assert print_check("K7 rho_xx(1e3)/rho_xx(0) = 1.25", 1.25, rho_xx[-1] / rho_xx[0]) < 1e-3
+    print("K7 MR:", ", ".join(f"{x:g}: {m:.4e}" for x, m in zip(xbar, mr)))
+    assert np.all(mr > 0) and np.all(np.diff(mr) > 0)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("pocket", ["hole-M", "electron-gamma"])
+def test_k8_arbitrary_closed_pocket(backend, pocket):
+    """K8: tight-binding pocket with hot-spot τ(φ). At x̄ = 10³ (x̄ = 2π|B|/∮γ ds, ω_cτ averaged
+    round the orbit) R_H = 1/(nq) with n from the enclosed area (Lifshitz–Azbel–Kaganov), and
+    MR has saturated: ρ_xx changes by < 1e-3 between x̄ = 10³ and 2×10³. Tolerance 1e-3."""
+    a = 3.87e-10
+    centre, mu, sign = ((np.pi / a, np.pi / a), 0.0, +1) if pocket == "hole-M" else ((0.0, 0.0), -0.4 * E, -1)
+    df = gen.tight_binding(N, tau=lambda p: sc.hot_spot(p, TAU, strength=4.0, width=0.2), lattice_constant=a,
+                           hopping=0.25 * E, next_hopping=-0.0625 * E, third_hopping=0.02 * E,
+                           chemical_potential=mu, center=centre)
+    per_tesla = orbit_x(df, 1.0)
+    _, rho_xx, _, r_h = transport(df, np.array([1e3, 2e3]) / per_tesla, backend)
+    n = bz.carrier_density(df, layer_spacing=D)
+    assert print_check(f"K8 {pocket}: R_H(1e3) = 1/(nq)", 1 / (n * sign * E), r_h[0]) < 1e-3
+    change = abs(rho_xx[1] / rho_xx[0] - 1)
+    print(f"K8 {pocket}: rho_xx change between xbar = 1e3 and 2e3: {change:.1e}")
+    assert change < 1e-3

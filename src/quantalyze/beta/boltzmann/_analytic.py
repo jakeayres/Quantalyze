@@ -106,3 +106,22 @@ def angular_average(f):
     """⟨f⟩ = (1/2π) ∫₀^{2π} f(φ) dφ by adaptive quadrature."""
     value, _ = quad(f, 0.0, 2 * np.pi, epsabs=0.0, epsrel=1e-13, limit=500)
     return value / (2 * np.pi)
+
+def spectral_area(kx, ky):
+    """Area enclosed by a smoothly, evenly parametrised closed contour (m⁻²). Tests only.
+
+    Treats the nodes as samples of a smooth periodic curve k(θ), θ_j = 2πj/N,
+    differentiates spectrally, and applies the trapezoid rule to
+    A = ½∮(k_x dk_y − k_y dk_x). Both steps are spectrally accurate for smooth
+    periodic curves, so a uniformly sampled circle gives πk_F² to rounding
+    (a polygon/shoelace area would only be O(N⁻²)).
+    """
+    kx = np.asarray(kx, dtype=float) - np.mean(kx)
+    ky = np.asarray(ky, dtype=float) - np.mean(ky)
+    n = kx.size
+    wavenumber = np.fft.fftfreq(n, d=1.0 / n)  # integers 0, 1, ..., −1
+    if n % 2 == 0:
+        wavenumber[n // 2] = 0.0  # Nyquist mode has no well-defined derivative
+    dkx = np.fft.ifft(1j * wavenumber * np.fft.fft(kx)).real  # dk_x/dθ
+    dky = np.fft.ifft(1j * wavenumber * np.fft.fft(ky)).real  # dk_y/dθ
+    return abs(0.5 * np.sum(kx * dky - ky * dkx) * (2 * np.pi / n))
