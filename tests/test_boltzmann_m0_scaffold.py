@@ -254,6 +254,43 @@ def test_from_dispersion_accepts_a_sample_exactly_on_the_fermi_surface():
     np.testing.assert_allclose(np.hypot(df.kx, df.ky), K_F, rtol=1e-15)
 
 
+def test_from_dispersion_roots_match_an_independent_root_finder():
+    """Every node is where scipy's brentq, run ray by ray, puts the crossing (1e-14 of the
+    radius). The rays are solved together, so this checks that shortcut independently."""
+    a = A
+    df = gen.tight_binding(512, tau=TAU, lattice_constant=a, hopping=T1, next_hopping=T2, third_hopping=T3,
+                           chemical_potential=MU_HOLE, center=(np.pi / a, np.pi / a))
+    phi = 2 * np.pi * np.arange(512) / 512
+    radius = np.hypot(df.kx - np.pi / a, df.ky - np.pi / a)
+    worst = 0.0
+    for i in range(0, 512, 7):
+        c, s_ = np.cos(phi[i]), np.sin(phi[i])
+        reach = (np.pi / a) / max(abs(c), abs(s_))
+        root = brentq(lambda r: eps_tight_binding(np.pi / a + r * c, np.pi / a + r * s_, mu=MU_HOLE), 0.0, reach,
+                      xtol=1e-15 * reach, rtol=4 * np.finfo(float).eps)
+        worst = max(worst, abs(radius[i] / root - 1))
+    print(f"max relative difference from brentq: {worst:.1e}")
+    assert worst <= 1e-14
+
+
+def test_from_dispersion_converges_with_a_poor_gradient():
+    """The gradient only guides the Newton steps (and gives v): one ten times too small, or
+    pointing the wrong way, falls back to bisection and still finds the crossing."""
+    c2 = HBAR**2 / (2 * ELECTRON_MASS)
+    energy = lambda kx, ky: c2 * (kx**2 + ky**2 - K_F**2)  # noqa: E731
+    for scale in (0.1, -1.0):
+        df = gen.from_dispersion(64, tau=TAU, max_radius=2.3 * K_F, energy=energy,
+                                 gradient=lambda kx, ky: (scale * 2 * c2 * kx, scale * 2 * c2 * ky))
+        np.testing.assert_allclose(np.hypot(df.kx, df.ky), K_F, rtol=1e-14)
+
+
+def test_from_dispersion_rejects_a_non_finite_energy_along_a_ray():
+    with pytest.raises(ValueError, match="not finite along the ray"):
+        gen.from_dispersion(64, tau=TAU, max_radius=2e10,
+                            energy=lambda kx, ky: np.where(kx > 1.5e10, np.nan, kx**2 + ky**2 - K_F**2),
+                            gradient=lambda kx, ky: (2 * kx, 2 * ky))
+
+
 def test_generators_reject_bad_arguments():
     with pytest.raises(ValueError):
         gen.circle(64, k_fermi=K_F, mass=ELECTRON_MASS, tau=TAU, carrier="positron")

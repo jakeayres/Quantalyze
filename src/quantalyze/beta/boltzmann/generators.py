@@ -29,11 +29,13 @@ from typing import Callable, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import brentq
 
 from ...core.constants import HBAR
 
 Tau = Union[float, Callable[[np.ndarray], np.ndarray]]
+
+# Samples along each ray that check it crosses the Fermi surface once and bracket the crossing.
+_RAY_SAMPLES = 64
 
 _CARRIER_SIGN = {"electron": 1.0, "hole": -1.0}
 
@@ -224,9 +226,10 @@ def from_dispersion(
 
     The Fermi contour ε(k) = 0 about `center` is found along N rays evenly spaced in
     polar angle, so the pocket must be star-shaped about the centre (each ray crosses
-    it exactly once) and lie within `max_radius` of it. The velocity is
-    v = ∇ε/ħ from the supplied gradient, so whether the pocket is electron- or
-    hole-like follows from the band itself.
+    it exactly once) and lie within `max_radius` of it. All rays are solved together
+    (Newton steps along each ray from the gradient, safeguarded by bisection), to the
+    precision of the floating-point numbers. The velocity is v = ∇ε/ħ from the supplied
+    gradient, so whether the pocket is electron- or hole-like follows from the band itself.
 
     Args:
         n_points: Number of nodes N, evenly spaced in polar angle about `center`.
@@ -244,7 +247,7 @@ def from_dispersion(
 
     Raises:
         ValueError: If the pocket is not closed within `max_radius`, or not star-shaped,
-            about `center`.
+            about `center`, or the energy is not finite along a ray.
 
     Examples:
         A parabolic band with a fourfold quartic correction:
@@ -266,30 +269,87 @@ def from_dispersion(
         raise ValueError("the Fermi level passes through the pocket centre")
 
     phi = _polar_angles(n_points)
-    radius = np.empty(n_points)  # |k − centre|, (N,)
-    samples = np.linspace(0.0, 1.0, 65)[1:]  # (64,)
-    for i, angle in enumerate(phi):
-        c, s = np.cos(angle), np.sin(angle)
-        r_max = float(max_radius(angle)) if callable(max_radius) else float(max_radius)
-        along_ray = energy(cx + samples * r_max * c, cy + samples * r_max * s)  # (64,)
-        signs = np.sign(np.concatenate(([energy_centre], along_ray)))
-        # A sample exactly on the Fermi surface (ε = 0) is itself the crossing: skip it
-        # rather than count a change into and out of zero.
-        crossings = np.count_nonzero(np.diff(signs[signs != 0]))
-        if crossings == 0:
-            raise ValueError(
-                f"no Fermi crossing within max_radius of the centre at φ = {angle:.3f} rad: "
-                "the pocket is open, absent or larger than max_radius"
-            )
-        if crossings > 1:
-            raise ValueError(f"the pocket is not star-shaped about the centre (φ = {angle:.3f} rad)")
-        radius[i] = brentq(lambda r: energy(cx + r * c, cy + r * s), 0.0, r_max,
-                           xtol=1e-15 * r_max, rtol=4 * np.finfo(float).eps)
+    if callable(max_radius):
+        reach = np.array([float(max_radius(angle)) for angle in phi])  # (N,)
+    else:
+        reach = np.full(n_points, float(max_radius))
+    radius = _ray_crossings(energy, gradient, phi, reach, (cx, cy), energy_centre)  # |k − centre|, (N,)
 
     kx = cx + radius * np.cos(phi)
     ky = cy + radius * np.sin(phi)
     grad_x, grad_y = gradient(kx, ky)
     return _frame(kx, ky, np.asarray(grad_x) / HBAR, np.asarray(grad_y) / HBAR, _tau_column(tau, phi))
+
+
+def _ray_crossings(energy, gradient, phi, reach, centre, energy_centre) -> np.ndarray:
+    """Distance from the centre to the Fermi crossing on each ray (m⁻¹), shape (N,).
+
+    Each ray is sampled at `_RAY_SAMPLES` evenly spaced points out to its reach, which
+    checks that it crosses ε = 0 exactly once and brackets the crossing. Then every ray
+    is refined at once by Newton steps along the ray, dε/dr = ∇ε·r̂ from the supplied
+    gradient, falling back to bisection whenever a step would leave the bracket or is not
+    shrinking it fast enough, so it converges even if the gradient is poor. The tolerance
+    is scipy's brentq's: 1e-15 of the reach plus 4 ulp of the radius.
+    """
+    cx, cy = centre
+    n_rays = phi.size
+    ux, uy = np.cos(phi), np.sin(phi)
+    radii = reach[:, None] * np.linspace(0.0, 1.0, _RAY_SAMPLES + 1)  # column 0 is the centre, (N, S+1)
+    values = np.empty(radii.shape)
+    values[:, 0] = energy_centre
+    along = energy((cx + radii[:, 1:] * ux[:, None]).ravel(), (cy + radii[:, 1:] * uy[:, None]).ravel())
+    values[:, 1:] = np.asarray(along, dtype=np.float64).reshape(n_rays, _RAY_SAMPLES)
+    bad = np.flatnonzero(~np.all(np.isfinite(values), axis=1))
+    if bad.size:
+        raise ValueError(f"energy is not finite along the ray at φ = {phi[bad[0]]:.3f} rad, within max_radius")
+
+    # A sample exactly on the Fermi surface (ε = 0) is itself the crossing: give it the sign
+    # of the sample before it, rather than count a change into and out of zero.
+    signs = np.sign(values)
+    last = np.maximum.accumulate(np.where(signs != 0, np.arange(_RAY_SAMPLES + 1), 0), axis=1)
+    filled = np.take_along_axis(signs, last, axis=1)
+    changes = filled[:, 1:] != filled[:, :-1]  # (N, S)
+    crossings = np.count_nonzero(changes, axis=1)
+    bad = np.flatnonzero(crossings != 1)
+    if bad.size:
+        angle = phi[bad[0]]
+        if crossings[bad[0]] == 0:
+            raise ValueError(
+                f"no Fermi crossing within max_radius of the centre at φ = {angle:.3f} rad: "
+                "the pocket is open, absent or larger than max_radius"
+            )
+        raise ValueError(f"the pocket is not star-shaped about the centre (φ = {angle:.3f} rad)")
+
+    rays = np.arange(n_rays)
+    after = np.argmax(changes, axis=1) + 1  # first sample past the crossing
+    lower = last[rays, after - 1]  # last non-zero sample before it
+    lo, hi = radii[rays, lower], radii[rays, after]
+    f_lo = values[rays, lower]
+    tolerance = 1e-15 * reach
+    # Safeguarded Newton ("rtsafe"): bisect whenever the Newton step leaves [lo, hi] or
+    # would shrink the bracket less than halving it did two steps ago.
+    step_before = hi - lo
+    step = step_before.copy()
+    r = 0.5 * (lo + hi)
+    for _ in range(200):
+        kx, ky = cx + r * ux, cy + r * uy
+        f = np.asarray(energy(kx, ky), dtype=np.float64)
+        gx, gy = gradient(kx, ky)
+        slope = np.asarray(gx, dtype=np.float64) * ux + np.asarray(gy, dtype=np.float64) * uy
+        beyond = np.sign(f) == np.sign(f_lo)  # the crossing is further out than r
+        lo, f_lo = np.where(beyond, r, lo), np.where(beyond, f, f_lo)
+        hi = np.where(beyond, hi, r)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            newton = r - f / slope
+            usable = (np.isfinite(newton) & (newton >= lo) & (newton <= hi)
+                      & (np.abs(2 * f) <= np.abs(step_before * slope)))
+        step_before = step
+        step = np.where(usable, r - newton, r - 0.5 * (lo + hi))
+        converged = (np.abs(step) <= tolerance + 4 * np.finfo(float).eps * np.abs(r)) | (f == 0)
+        r = np.where(f == 0, r, r - step)
+        if np.all(converged):
+            return r
+    raise RuntimeError("root-finding along the rays did not converge")  # bisection alone takes ~60 steps
 
 
 def from_dispersion_3d(
