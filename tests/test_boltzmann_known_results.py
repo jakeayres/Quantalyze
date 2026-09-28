@@ -486,3 +486,189 @@ def test_k14_high_field_expansion(backend, pocket):
     ratios = [(rho[1, i, i] - rho[3, i, i]) / (rho[0, i, i] - rho[3, i, i]) for i in range(2)]
     print(f"K14 {pocket}: [rho(60) - rho(inf)] / [rho(30) - rho(inf)] = {ratios[0]:.4f} (xx), {ratios[1]:.4f} (yy)")
     assert all(abs(r - 0.25) <= 0.01 for r in ratios)
+
+
+# ---------------------------------------------------------------------------
+# K15–K19: corners, interlayer harmonics, Ong's theorem, a Hall sign reversal, and the
+# high-field Hall conductivity of several pockets
+# ---------------------------------------------------------------------------
+
+def square(per_side, half_width, speed, tau, cut):
+    """A square Fermi surface: nodes along each side with v normal to it, corners cut at
+    distance `cut` from the vertex (the cut segment is normal to the mean velocity)."""
+    t = np.linspace(-half_width + cut, half_width - cut, per_side)
+    sides = []
+    for side in range(4):  # right, top, left, bottom: anticlockwise
+        c, s = np.cos(side * np.pi / 2), np.sin(side * np.pi / 2)
+        sides.append(pd.DataFrame({"kx": c * half_width - s * t, "ky": s * half_width + c * t,
+                                   "vx": np.full(per_side, speed * c), "vy": np.full(per_side, speed * s),
+                                   "tau": tau}))
+    return pd.concat(sides, ignore_index=True)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_k15_square_fermi_surface(backend):
+    """K15: a square Fermi surface with sharp corners (constant v normal to each side, constant
+    τ) has a closed-form Chambers σ at every B. Its corners give a magnetoresistance linear in
+    |B| at low field, MR = (2/π)|ω_cτ| (A. B. Pippard, Magnetoresistance in Metals, 1989): the
+    physical counterpart of the discretisation artefact the solver must not produce on smooth
+    pockets. Along the sides ℓ is constant, so the model is exact there; the only error comes
+    from cutting the corners, at 1e-11 of the half-width here (the error scales with the cut).
+    Tolerance 1e-8 (σ at every field), 1e-6 (MR) and 1e-3 (the 2/π slope at ω_cτ = 10⁻⁴)."""
+    k0, speed = 5e9, 2e5
+    per_tesla = 2 * np.pi * E * speed * TAU / (8 * HBAR * k0)  # ω_cτ per tesla, ω_c = 2π/(4 t_s)
+    x = np.array([1e-4, 1e-3, 1e-2, 0.1, 1.0, 10.0, 100.0])
+    fields = np.concatenate([[0.0], x, -x]) / per_tesla
+    actual = sigma(square(256, k0, speed, TAU, 1e-11 * k0), fields, backend)
+    expected = an.square_fermi_surface(fields, half_width=k0, speed=speed, tau=TAU, layer_spacing=D)
+    error = np.max(np.abs(actual - expected), axis=(1, 2)) / np.max(np.abs(expected), axis=(1, 2))
+    print("K15 sigma errors: " + ", ".join(f"{e:.1e}" for e in error))
+    assert error.max() <= 1e-8
+    rho, rho_exact = np.linalg.inv(actual), np.linalg.inv(expected)
+    mr = rho[1:8, 0, 0] / rho[0, 0, 0] - 1
+    mr_exact = rho_exact[1:8, 0, 0] / rho_exact[0, 0, 0] - 1
+    print("K15 MR/x: " + ", ".join(f"{m / xi:.6f}" for m, xi in zip(mr, x)) + f" (2/pi = {2 / np.pi:.6f})")
+    assert np.max(np.abs(mr / mr_exact - 1)) <= 1e-6
+    assert abs(mr[0] / x[0] / (2 / np.pi) - 1) <= 1e-3
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_k16_interlayer_magnetoresistance_harmonics(backend):
+    """K16: on a circular in-plane orbit (constant ω_c and τ) each angular harmonic cos(nφ) of v_z
+    decays as 1/(1 + (nω_cτ)²) in the Chambers integral. With v_z ∝ (a₀ + a₄ cos 4φ) sin(k_z d),
+    as for a d-wave-like interlayer hopping,
+    σ_zz(B)/σ_zz(0) = [a₀² + (a₄²/2)/(1 + (4ω_cτ)²)] / [a₀² + a₄²/2], and σ_xz = σ_yz = 0 by
+    symmetry. N = 512 in-plane, 4 slices. Tolerance 1e-3 (ratio), 1e-12 (off-diagonal)."""
+    a0, a4 = 0.5, 0.5
+    slices = []
+    for j in range(4):
+        kz = -np.pi / D + 2 * np.pi * j / (4 * D)
+        df = gen.circle(N, k_fermi=K_F, mass=M, tau=TAU)
+        phi = np.arctan2(df.ky, df.kx)
+        slices.append(df.assign(kz=kz, vz=1e3 * (a0 + a4 * np.cos(4 * phi)) * np.sin(kz * D)))
+    x = np.array([0.0, 0.01, 0.1, 0.25, 1.0, 10.0, -0.25])
+    s = bz.conductivity(pd.concat(slices, ignore_index=True), x * M / (E * TAU), layer_spacing=D, kz="kz",
+                        backend=backend)
+    ratio = (s.sigma_zz / s.sigma_zz.iloc[0]).to_numpy()
+    w0, w4 = a0**2, a4**2 / 2
+    assert print_check("K16 sigma_zz(B)/sigma_zz(0)", (w0 + w4 / (1 + (4 * x) ** 2)) / (w0 + w4), ratio) < 1e-3
+    cross = np.max(np.abs(s[["sigma_xz", "sigma_zx", "sigma_yz", "sigma_zy"]].to_numpy()))
+    assert cross <= 1e-12 * np.sqrt(s.sigma_xx.iloc[0] * s.sigma_zz.iloc[0])
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("pocket", ["circle", "ellipse", "fourfold-convex", "fourfold-concave"])
+def test_k17_ong_theorem_constant_mean_free_path(backend, pocket):
+    """K17: in 2D the weak-field Hall conductivity is set by the area A_ℓ swept by the mean free
+    path vector ℓ = vτ round the Fermi surface, σ_xy/B = −(g_s e³/4π²ħ²d)·A_ℓ for electrons
+    (N. P. Ong, PRB 43, 193 (1991)). With |ℓ| = ℓ₀ everywhere, A_ℓ = πℓ₀² whatever the shape,
+    convex or not: here τ = ℓ₀/|v| on four different pockets, N = 1024. Tolerance 1e-4."""
+    shapes = {
+        "circle": lambda: gen.circle(1024, k_fermi=K_F, mass=M, tau=TAU),
+        "ellipse": lambda: gen.ellipse(1024, k_fermi=K_F, mass_x=M, mass_y=4 * M, tau=TAU, rotation=0.3),
+        "fourfold-convex": lambda: gen.polar(1024, k_fermi=lambda p: K_F * (1 - 0.04 * np.cos(4 * p)), mass=M,
+                                             tau=TAU),
+        "fourfold-concave": lambda: gen.polar(1024, k_fermi=lambda p: K_F * (1 - 0.1 * np.cos(4 * p)), mass=M,
+                                              tau=TAU),
+    }
+    path = 2e-8  # m
+    df = shapes[pocket]()
+    df = df.assign(tau=path / np.hypot(df.vx, df.vy))
+    field = 1e-3  # T: ω_cτ ~ 1e-4
+    s = sigma(df, field, backend)[0]
+    prefactor = 2 * E**3 / (4 * np.pi**2 * HBAR**2 * D)
+    assert print_check(f"K17 {pocket}: Hall slope = -pi l0^2 x prefactor", -np.pi * path**2 * prefactor,
+                       0.5 * (s[0, 1] - s[1, 0]) / field) < 1e-4
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_k18_hall_sign_reversal_on_a_concave_electron_pocket(backend):
+    """K18: an electron pocket whose concave parts carry the long mean free paths has a positive
+    weak-field Hall coefficient: those parts sweep ℓ the other way (Ong, PRB 43, 193 (1991)). At
+    high field R_H = −1/(ne) regardless (Lifshitz–Azbel–Kaganov). Here k_F = k₀(1 − 0.12 cos4φ),
+    concave at φ = 0, π/2, …, with hot spots (short τ) on the convex arms at π/4, 3π/4, …, and
+    N = 2048. R_H(x̄ = 10⁻⁵) matches the Jones–Zener value (+0.65/ne; with hot spots this strong
+    the B² correction is already 1e-3 at x̄ = 10⁻³); R_H is still positive at x̄ = 10⁻³, negative
+    by 0.3, and −1/(ne) at x̄ = 10³. Tolerance 1e-3."""
+    k_fermi = lambda p: K_F * (1 - 0.12 * np.cos(4 * p))  # noqa: E731
+    dk_fermi = lambda p: K_F * 0.48 * np.sin(4 * p)  # noqa: E731
+    arms = tuple(np.pi / 4 + np.arange(4) * np.pi / 2)
+    tau = lambda p: sc.hot_spot(p, TAU, strength=30.0, width=0.3, positions=arms)  # noqa: E731
+    contour = ref.ParametricContour.polar(k_fermi=k_fermi, dk_fermi=dk_fermi, mass=M, tau=tau)
+    _, slope, _ = an.low_field_resistivity(*an.jones_zener(contour, layer_spacing=D))
+    df = gen.polar(2048, k_fermi=k_fermi, dk_fermi=dk_fermi, mass=M, tau=tau)
+    n = bz.carrier_density(df, layer_spacing=D)
+    xbar = np.array([1e-5, 1e-3, 0.3, 1e3])
+    r_h = transport(df, xbar / orbit_x(df, 1.0), backend)[3]
+    print("K18: R_H*ne at xbar = 1e-5, 1e-3, 0.3, 1e3: " + ", ".join(f"{v * n * E:+.5f}" for v in r_h))
+    assert r_h[0] > 0 and r_h[1] > 0 and r_h[2] < 0
+    assert print_check("K18 R_H(1e-5) = Jones-Zener", 0.5 * (slope[1, 0] - slope[0, 1]), r_h[0]) < 1e-3
+    assert print_check("K18 R_H(1e3) = -1/(ne)", -1 / (n * E), r_h[3]) < 1e-3
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_k19_high_field_hall_conductivity_of_several_pockets(backend):
+    """K19: at high field every closed pocket contributes ±ne/B to σ_xy whatever its shape and
+    scattering (Lifshitz–Azbel–Kaganov), so B·σ_H → e(n_h − n_e) with each n from its enclosed
+    area. A tight-binding hole pocket with hot spots, a fourfold electron pocket with anisotropic
+    τ and an electron circle, at ω_cτ ≳ 10³ on every pocket. Tolerance 1e-3."""
+    a = 3.87e-10
+    hole = gen.tight_binding(N, tau=lambda p: sc.hot_spot(p, TAU, strength=4.0, width=0.2), lattice_constant=a,
+                             hopping=0.25 * E, next_hopping=-0.0625 * E, third_hopping=0.02 * E,
+                             chemical_potential=0.0, center=(np.pi / a, np.pi / a))
+    electrons = [gen.polar(N, k_fermi=lambda p: 5e9 * (1 - 0.05 * np.cos(4 * p)), mass=M,
+                           tau=lambda p: sc.cos4phi(p, TAU, anisotropy=0.5)),
+                 gen.circle(N, k_fermi=3e9, mass=2 * M, tau=2 * TAU)]
+    field = 1e3 / min(orbit_x(df, 1.0) for df in [hole, *electrons])
+    s = bz.conductivity([hole, *electrons], field, layer_spacing=D, backend=backend)
+    hall = 0.5 * (s.sigma_xy.iloc[0] - s.sigma_yx.iloc[0]) * field
+    n_h = bz.carrier_density(hole, layer_spacing=D)
+    n_e = sum(bz.carrier_density(df, layer_spacing=D) for df in electrons)
+    assert print_check("K19 B sigma_H = e(n_h - n_e)", E * (n_h - n_e), hall) < 1e-3
+
+
+# ---------------------------------------------------------------------------
+# More invariances (K9, K10)
+# ---------------------------------------------------------------------------
+
+def lopsided(n=N):
+    return gen.polar(n, k_fermi=lambda p: K_F * (1 + 0.08 * np.cos(3 * p) + 0.05 * np.sin(2 * p + 0.3)), mass=M,
+                     tau=lambda p: sc.hot_spot(p, TAU, strength=3.0, width=0.35, positions=(0.3, 2.0, 4.1)))
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_k9_charge_conjugation(backend):
+    """K9: reversing the charge reverses the orbit, as reversing B does: σ(B; q = +e) = σ(−B; q = −e)
+    on a pocket with no mirror plane. Tolerance 1e-12."""
+    fields = np.array([0.0, 0.3, 3.0, 30.0, -3.0])
+    df = lopsided()
+    error = normwise(sigma(df, fields, backend, charge=+E), sigma(df, -fields, backend, charge=-E))
+    print(f"K9 charge conjugation: {error:.1e}")
+    assert error <= 1e-12
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_k10_translation_and_prefactor(backend):
+    """K10: σ depends on the pocket's shape, not where it sits in k-space (translating it by
+    (π/a, −π/a) changes nothing but rounding: 1e-10), and it scales exactly as g_s/d."""
+    fields = np.array([0.0, 0.3, 3.0, 30.0])
+    df = lopsided()
+    base = sigma(df, fields, backend)
+    shift = np.pi / 3.87e-10
+    moved = sigma(df.assign(kx=df.kx + shift, ky=df.ky - shift), fields, backend)
+    print(f"K10 translation: {normwise(moved, base):.1e}")
+    assert normwise(moved, base) <= 1e-10
+    scaled = sigma(df, fields, backend, layer_spacing=D / 2, spin_degeneracy=1)
+    np.testing.assert_allclose(scaled, base, rtol=1e-14, atol=0)  # g_s/d is unchanged: 1/(D/2) = 2/D
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_k10_fourfold_symmetry_makes_sigma_isotropic(backend):
+    """K10: a pocket with fourfold symmetry (sampled so the rotation maps nodes onto nodes) has
+    σ_xx = σ_yy and σ_xy = −σ_yx at every field. Tolerance 1e-12."""
+    s = sigma(fourfold(), np.array([0.0, 0.3, 3.0, 30.0, 300.0]), backend)
+    scale = np.max(np.abs(s))
+    print(f"K10 C4: |sigma_xx - sigma_yy| {np.max(np.abs(s[:, 0, 0] - s[:, 1, 1])) / scale:.1e}, "
+          f"|sigma_xy + sigma_yx| {np.max(np.abs(s[:, 0, 1] + s[:, 1, 0])) / scale:.1e}")
+    assert np.max(np.abs(s[:, 0, 0] - s[:, 1, 1])) <= 1e-12 * scale
+    assert np.max(np.abs(s[:, 0, 1] + s[:, 1, 0])) <= 1e-12 * scale

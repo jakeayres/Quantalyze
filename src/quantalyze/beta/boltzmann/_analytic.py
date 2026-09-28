@@ -104,6 +104,44 @@ def hall_coefficient(sigma, field):
         return np.where(B == 0, np.nan, 0.5 * (rho[:, 1, 0] - rho[:, 0, 1]) / B)
 
 
+def square_fermi_surface(field, *, half_width, speed, tau, layer_spacing, charge=-E, spin_degeneracy=2):
+    """Chambers σ of a square Fermi surface with sharp corners, in closed form (S/m).
+
+    The square has half-width k₀ (sides of k-length 2k₀), the velocity is v normal to
+    each side and points outwards, and τ is constant. A carrier crosses a side in
+    t_s = 2ħk₀/(e|B|v) at constant velocity, and at each corner its velocity turns by
+    90° (anticlockwise for qB < 0). With a = e^{−t_s/τ} and R that 90° rotation, the
+    history at the start of a side is W = τ(1 − a)(R − a)⁻¹ v₀, repeating with R round
+    the orbit, and σ = (g_s e³/4π²ħ²d)|B| Σ_sides [v_j ⊗ W_j τ(1 − a) + v_j ⊗ v_j τ(t_s − τ(1 − a))].
+    At low field σ_xx = σ(0)[1 − (2/π)|ω_cτ| + …] with ω_c = 2π/(4t_s): the corners give
+    a magnetoresistance linear in |B| (A. B. Pippard, Magnetoresistance in Metals, 1989).
+
+    Returns:
+        ndarray of shape (nB, 2, 2).
+    """
+    fields = np.atleast_1d(np.asarray(field, dtype=float))
+    zero_field = spin_degeneracy * E**2 / (4 * np.pi**2 * HBAR * layer_spacing) * tau * speed * 2 * (2 * half_width)
+    prefactor = _prefactor(layer_spacing, spin_degeneracy)
+    result = np.empty((fields.size, 2, 2))
+    for index, b in enumerate(fields):
+        if b == 0:
+            result[index] = zero_field * np.eye(2)
+            continue
+        turn = -np.sign(charge) * np.sign(b)  # +1: the velocity turns anticlockwise at each corner
+        rotation = np.array([[0.0, -turn], [turn, 0.0]])
+        side_time = 2 * HBAR * half_width / (E * abs(b) * speed)
+        a = np.exp(-side_time / tau)
+        velocity = np.array([speed, 0.0])
+        history = tau * (1 - a) * np.linalg.solve(rotation - a * np.eye(2), velocity)
+        total = np.zeros((2, 2))
+        for _ in range(4):
+            total += (np.outer(velocity, history) * tau * (1 - a)
+                      + np.outer(velocity, velocity) * tau * (side_time - tau * (1 - a)))
+            velocity, history = rotation @ velocity, rotation @ history
+        result[index] = prefactor * abs(b) * total
+    return result
+
+
 def angular_average(f):
     """⟨f⟩ = (1/2π) ∫₀^{2π} f(φ) dφ by adaptive quadrature."""
     value, _ = quad(f, 0.0, 2 * np.pi, epsabs=0.0, epsrel=1e-13, limit=500)

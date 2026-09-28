@@ -10,6 +10,7 @@ kernel, in M10.)
 import functools
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from quantalyze.beta.boltzmann import _analytic as an
@@ -17,7 +18,7 @@ from quantalyze.beta.boltzmann import _reference as ref
 from quantalyze.beta.boltzmann import generators as gen
 from quantalyze.beta.boltzmann import scattering as sc
 from quantalyze.beta.boltzmann._response import conductivity_tensor
-from quantalyze.core.constants import ELECTRON_MASS, ELEMENTARY_CHARGE
+from quantalyze.core.constants import ELECTRON_MASS, ELEMENTARY_CHARGE, HBAR
 
 E = ELEMENTARY_CHARGE
 D = 1e-9  # m
@@ -155,6 +156,35 @@ def test_low_field_magnetoresistance_converges_to_the_jones_zener_limit(pocket):
     print(f"{pocket}: MR/B^2 = {coefficient:.6e} /T^2; relative errors " + ", ".join(f"{e:.2e}" for e in errors)
           + f"; slope {slope(errors):.3f}")
     assert -2.1 <= slope(errors) <= -1.9
+
+
+def lopsided_at(phi):
+    """The lopsided pocket at any polar angles (the generators space them evenly)."""
+    r, dr = lopsided_k(phi), lopsided_dk(phi)
+    radial, angular = HBAR * r / ELECTRON_MASS, -HBAR * dr / ELECTRON_MASS
+    return pd.DataFrame({"kx": r * np.cos(phi), "ky": r * np.sin(phi),
+                         "vx": radial * np.cos(phi) - angular * np.sin(phi),
+                         "vy": radial * np.sin(phi) + angular * np.cos(phi), "tau": lopsided_tau(phi)})
+
+
+@pytest.mark.parametrize("spacing", ["jittered", "random"])
+def test_irregularly_spaced_nodes_converge_to_the_reference(spacing):
+    """Measured contours (ARPES, DFT) are rarely evenly spaced. Nodes jittered by up to ±45% of
+    the spacing, or at sorted uniformly random angles, still converge to the reference: σ at
+    B = 0 and ω_cτ = 1 within 1e-4 at N = 1024 (even spacing: ~5e-6), and at least 20× closer at
+    N = 4096 than at N = 256."""
+    exact, field = reference("lopsided", 1.0)
+    rng = np.random.default_rng(0)
+    errors = []
+    for n in (256, 1024, 4096):
+        if spacing == "jittered":
+            phi = np.sort(2 * np.pi * (np.arange(n) + rng.uniform(-0.45, 0.45, n)) / n)
+        else:
+            phi = np.sort(rng.uniform(0.0, 2 * np.pi, n))
+        actual = sigma(lopsided_at(phi), [0.0, field])
+        errors.append(np.max(np.abs(actual - exact)) / np.max(np.abs(exact)))
+    print(f"{spacing}: errors at N = 256, 1024, 4096: " + ", ".join(f"{e:.1e}" for e in errors))
+    assert errors[1] <= 1e-4 and errors[2] <= errors[0] / 20
 
 
 @pytest.mark.slow
