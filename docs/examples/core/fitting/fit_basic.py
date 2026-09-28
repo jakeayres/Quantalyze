@@ -11,8 +11,8 @@ def fermi_liquid(temperature, rho0, A):
 result = qz.fit(fermi_liquid, rt, "temperature", "resistivity", x_max=20)
 
 print(result.parameters)  # in the order they appear in fermi_liquid
-print("rho0 =", result["rho0"])  # or look them up by name
-print("A    =", result["A"])
+print(f"rho0 = {result['rho0']:.6f}")  # or look them up by name
+print(f"A    = {result['A']:.6f}")
 # --8<-- [end:example]
 
 import matplotlib.pyplot as plt

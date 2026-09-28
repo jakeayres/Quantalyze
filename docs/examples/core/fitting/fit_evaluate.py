@@ -7,7 +7,7 @@ import quantalyze as qz
 result = qz.fit(lambda T, rho0, A: rho0 + A * T**2, rt, "temperature", "resistivity", x_max=20)
 
 # A single value...
-print(result.evaluate(0))  # the residual resistivity, extrapolated to T = 0
+print(f"{result.evaluate(0):.6f}")  # the residual resistivity, extrapolated to T = 0
 
 # ...an array...
 print(result.evaluate(np.array([4.2, 10, 20])))

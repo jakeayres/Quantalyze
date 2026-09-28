@@ -15,8 +15,8 @@ bad = qz.fit(peak, transition, "temperature", "heat_capacity")
 # A rough guess read off a plot, in the same order as peak's parameters.
 good = qz.fit(peak, transition, "temperature", "heat_capacity", p0=[0.5, 10, 0.5, 0])
 
-print(f"without p0: centre = {bad['centre']:.2f} K, width = {bad['width']:.2g} K")
-print(f"with p0:    centre = {good['centre']:.2f} K, width = {good['width']:.2g} K")
+print(f"without p0: centre = {bad['centre']:.2f} K, width = {bad['width']:.2f} K")
+print(f"with p0:    centre = {good['centre']:.2f} K, width = {good['width']:.2f} K")
 # --8<-- [end:example]
 
 import matplotlib.pyplot as plt

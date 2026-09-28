@@ -5,7 +5,7 @@ description = "Utility functions for analyzing scientific data."
 license = "MIT"
 license-files = ["LICENSE*"]
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = [
     "matplotlib>=3.9.4",
     "numba>=0.60.0",
@@ -27,8 +27,8 @@ test = [
     "pytest>=8.3.5",
 ]
 docs = [
-    "zensical>=0.0.65; python_version >= '3.10'",
-    "mkdocstrings-python>=2.0.9; python_version >= '3.10'",
+    "zensical>=0.0.65",
+    "mkdocstrings-python>=2.0.9",
 ]
 
 
