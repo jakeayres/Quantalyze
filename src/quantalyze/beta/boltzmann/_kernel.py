@@ -232,38 +232,45 @@ def orbit_sums(damping, lx, ly, field):
 # carries ℓ_z along with it, so the same recursion runs on three components.
 
 @njit(cache=True, inline="always")
-def _segment_weights3(damping, lx, ly, lz, b, weights, local):
-    """As `_segment_weights` with (ℓ_x, ℓ_y, ℓ_z): the local parts go into `local` (3×3)."""
+def _segment_weights3(damping, lx, ly, lz, b, weights):
+    """As `_segment_weights` with (ℓ_x, ℓ_y, ℓ_z): returns Z and the nine local sums, row by
+    row. (They are kept in scalars, not an array, so they stay in registers.)"""
     n_nodes = damping.size
     inverse_field = 1.0 / b
     total = 0.0
-    for i in range(3):
-        for k in range(3):
-            local[i, k] = 0.0
+    xx = 0.0
+    xy = 0.0
+    xz = 0.0
+    yx = 0.0
+    yy = 0.0
+    yz = 0.0
+    zx = 0.0
+    zy = 0.0
+    zz = 0.0
     for n in range(n_nodes):
         q = n + 1 if n + 1 < n_nodes else 0
         z, alpha, beta, gamma = _segment(damping[n], inverse_field, weights, n)
         u0, u1, u2 = lx[n] + lx[q], ly[n] + ly[q], lz[n] + lz[q]
         d0, d1, d2 = lx[q] - lx[n], ly[q] - ly[n], lz[q] - lz[n]
-        local[0, 0] += alpha * u0 * u0 + beta * d0 * d0
-        local[1, 1] += alpha * u1 * u1 + beta * d1 * d1
-        local[2, 2] += alpha * u2 * u2 + beta * d2 * d2
+        xx += alpha * u0 * u0 + beta * d0 * d0
+        yy += alpha * u1 * u1 + beta * d1 * d1
+        zz += alpha * u2 * u2 + beta * d2 * d2
         s01, a01 = alpha * u0 * u1 + beta * d0 * d1, gamma * (u0 * d1 - d0 * u1)
         s02, a02 = alpha * u0 * u2 + beta * d0 * d2, gamma * (u0 * d2 - d0 * u2)
         s12, a12 = alpha * u1 * u2 + beta * d1 * d2, gamma * (u1 * d2 - d1 * u2)
-        local[0, 1] += s01 + a01
-        local[1, 0] += s01 - a01
-        local[0, 2] += s02 + a02
-        local[2, 0] += s02 - a02
-        local[1, 2] += s12 + a12
-        local[2, 1] += s12 - a12
+        xy += s01 + a01
+        yx += s01 - a01
+        xz += s02 + a02
+        zx += s02 - a02
+        yz += s12 + a12
+        zy += s12 - a12
         total += z
-    return total
+    return total, xx, xy, xz, yx, yy, yz, zx, zy, zz
 
 
 @njit(cache=True, inline="always")
-def _sweep3(weights, lx, ly, lz, total, reverse, out):
-    """As `_sweep` with (ℓ_x, ℓ_y, ℓ_z): writes the 3×3 carried part (over |B|) into `out`."""
+def _sweep3(weights, lx, ly, lz, total, reverse):
+    """As `_sweep` with (ℓ_x, ℓ_y, ℓ_z): the nine carried sums (over |B|), row by row."""
     n_nodes = lx.size
     w0 = 0.0
     w1 = 0.0
@@ -272,9 +279,15 @@ def _sweep3(weights, lx, ly, lz, total, reverse, out):
     c0 = 0.0
     c1 = 0.0
     c2 = 0.0
-    for i in range(3):
-        for k in range(3):
-            out[i, k] = 0.0
+    xx = 0.0
+    xy = 0.0
+    xz = 0.0
+    yx = 0.0
+    yy = 0.0
+    yz = 0.0
+    zx = 0.0
+    zy = 0.0
+    zz = 0.0
     for m in range(n_nodes):
         if reverse:
             j = n_nodes - 1 - m
@@ -289,15 +302,15 @@ def _sweep3(weights, lx, ly, lz, total, reverse, out):
         o0 = weights[2, j] * a0 + weights[1, j] * b0
         o1 = weights[2, j] * a1 + weights[1, j] * b1
         o2 = weights[2, j] * a2 + weights[1, j] * b2
-        out[0, 0] += o0 * w0
-        out[0, 1] += o0 * w1
-        out[0, 2] += o0 * w2
-        out[1, 0] += o1 * w0
-        out[1, 1] += o1 * w1
-        out[1, 2] += o1 * w2
-        out[2, 0] += o2 * w0
-        out[2, 1] += o2 * w1
-        out[2, 2] += o2 * w2
+        xx += o0 * w0
+        xy += o0 * w1
+        xz += o0 * w2
+        yx += o1 * w0
+        yy += o1 * w1
+        yz += o1 * w2
+        zx += o2 * w0
+        zy += o2 * w1
+        zz += o2 * w2
         c0 += o0 * decay
         c1 += o1 * decay
         c2 += o2 * decay
@@ -309,15 +322,9 @@ def _sweep3(weights, lx, ly, lz, total, reverse, out):
     first0 = w0 / closure
     first1 = w1 / closure
     first2 = w2 / closure
-    out[0, 0] += c0 * first0
-    out[0, 1] += c0 * first1
-    out[0, 2] += c0 * first2
-    out[1, 0] += c1 * first0
-    out[1, 1] += c1 * first1
-    out[1, 2] += c1 * first2
-    out[2, 0] += c2 * first0
-    out[2, 1] += c2 * first1
-    out[2, 2] += c2 * first2
+    return (xx + c0 * first0, xy + c0 * first1, xz + c0 * first2,
+            yx + c1 * first0, yy + c1 * first1, yz + c1 * first2,
+            zx + c2 * first0, zy + c2 * first1, zz + c2 * first2)
 
 
 @njit(parallel=True, cache=True)
@@ -327,20 +334,34 @@ def _orbit_sums_blocks3(damping, lx, ly, lz, field, n_blocks, both):
     n_fields = field.size
     result = np.zeros((2, n_fields, 3, 3))
     scratch = np.empty((n_blocks, _ROWS, n_nodes))
-    locals_ = np.empty((n_blocks, 3, 3))  # each block's local parts
     for block in prange(n_blocks):
         weights = scratch[block]
-        local = locals_[block]
         for f in range(block * n_fields // n_blocks, (block + 1) * n_fields // n_blocks):
             b = field[f]
-            total = _segment_weights3(damping, lx, ly, lz, b, weights, local)
-            for orientation in range(2 if both else 1):
-                out = result[orientation, f]
-                _sweep3(weights, lx, ly, lz, total, orientation == 1, out)
-                for i in range(3):
-                    for k in range(3):
-                        # the reversed orbit crosses every segment the other way: transposed
-                        out[i, k] = b * out[i, k] + (local[k, i] if orientation == 1 else local[i, k])
+            total, lxx, lxy, lxz, lyx, lyy, lyz, lzx, lzy, lzz = _segment_weights3(damping, lx, ly, lz, b, weights)
+            xx, xy, xz, yx, yy, yz, zx, zy, zz = _sweep3(weights, lx, ly, lz, total, False)
+            out = result[0, f]
+            out[0, 0] = b * xx + lxx
+            out[0, 1] = b * xy + lxy
+            out[0, 2] = b * xz + lxz
+            out[1, 0] = b * yx + lyx
+            out[1, 1] = b * yy + lyy
+            out[1, 2] = b * yz + lyz
+            out[2, 0] = b * zx + lzx
+            out[2, 1] = b * zy + lzy
+            out[2, 2] = b * zz + lzz
+            if both:  # the reversed orbit crosses every segment the other way: local part transposed
+                xx, xy, xz, yx, yy, yz, zx, zy, zz = _sweep3(weights, lx, ly, lz, total, True)
+                out = result[1, f]
+                out[0, 0] = b * xx + lxx
+                out[0, 1] = b * xy + lyx
+                out[0, 2] = b * xz + lzx
+                out[1, 0] = b * yx + lxy
+                out[1, 1] = b * yy + lyy
+                out[1, 2] = b * yz + lzy
+                out[2, 0] = b * zx + lxz
+                out[2, 1] = b * zy + lyz
+                out[2, 2] = b * zz + lzz
     return result
 
 
