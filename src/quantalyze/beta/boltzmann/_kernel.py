@@ -18,6 +18,11 @@ The closure w_0 = S/(1 − e^{−Z}), with S = w_N⁽⁰⁾, is known at the end
 second pass is needed. Both orientations share each segment's weights (the reversed
 orbit has the same z_n), which is what symmetrisation and its Onsager check need.
 
+The helpers are inlined into the parallel kernels at numba's IR level
+(`inline="always"`) rather than left to LLVM. Numba ≥ 0.62 (LLVM ≥ 20) otherwise keeps
+them as separate calls, and that code shares a core poorly with its hyperthread twin:
+about 25% slower with every hardware thread busy, although no slower on one thread.
+
 Determinism: each field is computed start to finish by one thread (`prange` over
 fields, serial loops over nodes), with no `fastmath`, so every sum is evaluated in
 the same order whatever the thread count and results are bitwise reproducible.
@@ -39,7 +44,7 @@ from ._kernel_py import _P3_LONG, _P3_SHORT, _THIRD, SERIES_Z, SMALL_Z
 _ROWS = 3
 
 
-@njit(cache=True)
+@njit(cache=True, inline="always")
 def _series(coefficients, z):
     """Σ c_j z^j as four interleaved Horner chains in z⁴ (their latencies overlap). The
     coefficients are padded to a multiple of four, and all of them and z are positive."""
@@ -58,7 +63,7 @@ def _series(coefficients, z):
     return (s0 + z * s1) + z2 * (s2 + z * s3)
 
 
-@njit(cache=True)
+@njit(cache=True, inline="always")
 def moments(z):
     """(e^{−z}, p₀, p₁, p₂, p₃) for one z ≥ 0, with p_k = ∫₀¹ r^k e^{−zr} dr."""
     decay = np.exp(-z)
@@ -75,7 +80,7 @@ def moments(z):
     return decay, p0, p1, p2, (3.0 * p2 - decay) * inverse
 
 
-@njit(cache=True)
+@njit(cache=True, inline="always")
 def _segment(g, inverse_field, weights, n):
     """Fill segment n's weights; return z_n and the local-part weights Δg z (α, β, γ)."""
     z = g * inverse_field
@@ -87,7 +92,7 @@ def _segment(g, inverse_field, weights, n):
     return z, k * (p0 - p1), k * (p0 * _THIRD - p1 + 2.0 * p3 * _THIRD), k * (p2 - p1)
 
 
-@njit(cache=True)
+@njit(cache=True, inline="always")
 def _segment_weights(damping, lx, ly, b, weights):
     """Fill every segment's weights at field |B| = b. Returns Z = Σ z_n and the local parts
     Σ Δg z [M_aa (a_i a_j + b_i b_j) + M_ab a_i b_j + M_ba b_i a_j], in the forward order."""
@@ -113,7 +118,7 @@ def _segment_weights(damping, lx, ly, b, weights):
     return total, xx, xy, yx, yy
 
 
-@njit(cache=True)
+@njit(cache=True, inline="always")
 def _sweep(weights, lx, ly, total, reverse):
     """The carried part of the orbit sums over one orientation, divided by |B|. Forwards,
     segment n runs from node n to n+1. Reversed, the orbit starts at node 0 and crosses
@@ -226,7 +231,7 @@ def orbit_sums(damping, lx, ly, field):
 # k_z-warped surfaces: each slice is an in-plane orbit (B ∥ ẑ keeps k_z fixed) that
 # carries ℓ_z along with it, so the same recursion runs on three components.
 
-@njit(cache=True)
+@njit(cache=True, inline="always")
 def _segment_weights3(damping, lx, ly, lz, b, weights, local):
     """As `_segment_weights` with (ℓ_x, ℓ_y, ℓ_z): the local parts go into `local` (3×3)."""
     n_nodes = damping.size
@@ -256,7 +261,7 @@ def _segment_weights3(damping, lx, ly, lz, b, weights, local):
     return total
 
 
-@njit(cache=True)
+@njit(cache=True, inline="always")
 def _sweep3(weights, lx, ly, lz, total, reverse, out):
     """As `_sweep` with (ℓ_x, ℓ_y, ℓ_z): writes the 3×3 carried part (over |B|) into `out`."""
     n_nodes = lx.size
