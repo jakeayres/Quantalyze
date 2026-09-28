@@ -61,7 +61,7 @@ def _zero_field_sums(damping, *paths):
     it is the same for either orientation, and σ(B) departs from it as B².
     """
     ell = np.stack(paths, axis=1)  # (N, d)
-    ell_next = np.roll(ell, -1, axis=0)
+    ell_next = np.concatenate((ell[1:], ell[:1]))  # (N, d)
     third, sixth = damping / 3, damping / 6
     return (np.einsum("n,ni,nj->ij", third, ell, ell) + np.einsum("n,ni,nj->ij", third, ell_next, ell_next)
             + np.einsum("n,ni,nj->ij", sixth, ell, ell_next) + np.einsum("n,ni,nj->ij", sixth, ell_next, ell))
@@ -352,16 +352,16 @@ def conductivity(
     for frame, frame_period in zip(frames, periods):
         slices = [frame] if kz is None else _kz_slices(frame, kz, layer_spacing)
         for part in slices:
-            tau_values = part[tau] if isinstance(tau, str) else float(tau)
+            tau_values = part[tau].to_numpy(dtype=np.float64) if isinstance(tau, str) else float(tau)
             # Each slice stands for 1/N_z of the k_z period: average them (a periodic
             # trapezoid rule in k_z, exact to rounding for smooth warping).
             total += conductivity_tensor(
-                part[kx], part[ky], part[vx], part[vy], tau_values, fields, period=frame_period,
-                vz=None if kz is None else part[vz], **options,
+                *(part[c].to_numpy(dtype=np.float64) for c in (kx, ky, vx, vy)), tau_values, fields,
+                period=frame_period, vz=None if kz is None else part[vz].to_numpy(dtype=np.float64), **options,
             ) / len(slices)
-    result = pd.DataFrame(total.reshape(fields.size, dim * dim), columns=_columns("sigma", dim))
-    result.insert(0, "field", fields)
-    return result
+    # One constructor call: inserting the field column afterwards is slow in pandas 3.
+    return pd.DataFrame(np.column_stack([fields, total.reshape(fields.size, dim * dim)]),
+                        columns=["field", *_columns("sigma", dim)])
 
 
 def _dimension(sigma: pd.DataFrame) -> int:
@@ -392,9 +392,8 @@ def resistivity(sigma: pd.DataFrame) -> pd.DataFrame:
         rho = np.stack([s[:, 1, 1], -s[:, 0, 1], -s[:, 1, 0], s[:, 0, 0]], axis=1) / det[:, None]
     else:
         rho = np.linalg.inv(s).reshape(-1, 9)
-    result = pd.DataFrame(rho, columns=_columns("rho", dim), index=sigma.index)
-    result.insert(0, "field", sigma["field"].to_numpy(dtype=np.float64))
-    return result
+    return pd.DataFrame(np.column_stack([sigma["field"].to_numpy(dtype=np.float64), rho]),
+                        columns=["field", *_columns("rho", dim)], index=sigma.index)
 
 
 def hall_coefficient(sigma: pd.DataFrame) -> pd.Series:

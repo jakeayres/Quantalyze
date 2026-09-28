@@ -78,11 +78,24 @@ class PreparedContour:
     lz: Optional[np.ndarray] = None
 
 
+def _float_array(values) -> np.ndarray:
+    # Series.to_numpy directly: np.asarray on a pandas object first probes it for NumPy's
+    # array protocols, and those failed attribute lookups are slow in pandas.
+    if hasattr(values, "to_numpy"):
+        return values.to_numpy(dtype=np.float64)
+    return np.asarray(values, dtype=np.float64)
+
+
 def _as_1d(name: str, values) -> np.ndarray:
-    array = np.asarray(values, dtype=np.float64)
+    array = _float_array(values)
     if array.ndim != 1:
         raise ValueError(f"{name} must be 1-D, not of shape {array.shape}")
     return array
+
+
+def _following(array: np.ndarray) -> np.ndarray:
+    """The value at the next node, a_{n+1} with indices mod N (_following(a), but cheaper)."""
+    return np.concatenate((array[1:], array[:1]))
 
 
 def _frozen(array: np.ndarray) -> np.ndarray:
@@ -183,7 +196,7 @@ def prepare_contour(
         raise ValueError(f"charge must be ±e ({ELEMENTARY_CHARGE} C), not {charge}")
 
     kx, ky, vx, vy = (_as_1d(n, a) for n, a in (("kx", kx), ("ky", ky), ("vx", vx), ("vy", vy)))
-    tau = np.asarray(tau, dtype=np.float64)
+    tau = _float_array(tau)
     if tau.ndim == 0:
         tau = np.full(kx.shape, float(tau))
     tau = _as_1d("tau", tau)
@@ -222,8 +235,8 @@ def prepare_contour(
                 "(the last point repeats the first)"
             )
 
-    dkx = np.roll(kx, -1) - kx  # segment n: node n → n+1, (N,)
-    dky = np.roll(ky, -1) - ky
+    dkx = _following(kx) - kx  # segment n: node n → n+1, (N,)
+    dky = _following(ky) - ky
     if wrap is not None:
         # The last segment ends at the first node shifted by whichever of ±G is adjacent.
         if np.hypot(dkx[-1] - wrap[0], dky[-1] - wrap[1]) < np.hypot(dkx[-1] + wrap[0], dky[-1] + wrap[1]):
@@ -250,11 +263,11 @@ def prepare_contour(
 
     # Direction of motion on each segment: dk/dt ∝ q (v_y, −v_x), averaged over its ends.
     sign = np.sign(charge)
-    tx = 0.5 * sign * (vy + np.roll(vy, -1))
-    ty = -0.5 * sign * (vx + np.roll(vx, -1))
+    tx = 0.5 * sign * (vy + _following(vy))
+    ty = -0.5 * sign * (vx + _following(vx))
     along = dkx * tx + dky * ty  # (N,)
     if np.all(along < 0):
-        order = np.roll(np.arange(kx.size)[::-1], 1)  # reverse, keeping node 0 first
+        order = np.concatenate(([0], np.arange(kx.size - 1, 0, -1)))  # reverse, keeping node 0 first
         kx, ky, vx, vy, tau, speed = (a[order] for a in (kx, ky, vx, vy, tau, speed))
         vz = None if vz is None else vz[order]
         # The same segments, crossed the other way and in the opposite order.
@@ -272,7 +285,7 @@ def prepare_contour(
     # Velocities should be normal to the contour: compare each segment with the mean of
     # the unit velocities at its ends.
     ux, uy = vx / speed, vy / speed
-    mx, my = ux + np.roll(ux, -1), uy + np.roll(uy, -1)
+    mx, my = ux + _following(ux), uy + _following(uy)
     mean_norm = np.hypot(mx, my)
     with np.errstate(divide="ignore", invalid="ignore"):
         cosine = np.where(mean_norm > 0, np.abs(dkx * mx + dky * my) / (length * mean_norm), 1.0)
@@ -287,19 +300,19 @@ def prepare_contour(
             stacklevel=2,
         )
 
-    s = HBAR * length / (2 * ELEMENTARY_CHARGE) * (1 / speed + 1 / np.roll(speed, -1))  # (N,), s·T
+    s = HBAR * length / (2 * ELEMENTARY_CHARGE) * (1 / speed + 1 / _following(speed))  # (N,), s·T
     # ∫ds/τ over the segment, with the rate 1/τ̄ of its mean τ. This keeps the orbit a
     # carrier traces, ∫ℓ dg = ½Δg(ℓ_n + ℓ_{n+1}) = s_n(τ_n v_n + τ_{n+1} v_{n+1})/(τ_n + τ_{n+1}),
     # within a (τ_n − τ_{n+1})(v_n − v_{n+1}) term of ½s_n(v_n + v_{n+1}), which does not
     # depend on τ at all (as the true ∫v ds does not), so the high-field limit stays
     # accurate where τ varies quickly.
-    damping = 2 * s / (tau + np.roll(tau, -1))  # (N,), T
+    damping = 2 * s / (tau + _following(tau))  # (N,), T
 
     lx, ly = vx * tau, vy * tau  # (N,), m
     drift = np.zeros(2)
     if remove_drift:
-        drift[0] = np.sum(0.5 * damping * (lx + np.roll(lx, -1))) / np.sum(damping)
-        drift[1] = np.sum(0.5 * damping * (ly + np.roll(ly, -1))) / np.sum(damping)
+        drift[0] = np.sum(0.5 * damping * (lx + _following(lx))) / np.sum(damping)
+        drift[1] = np.sum(0.5 * damping * (ly + _following(ly))) / np.sum(damping)
         lx = lx - drift[0]
         ly = ly - drift[1]
 
@@ -351,10 +364,10 @@ def enclosed_area(kx, ky, vx, vy) -> float:
     kx, ky = kx - np.mean(kx), ky - np.mean(ky)  # centre first: less cancellation
     speed = np.hypot(vx, vy)
     tx, ty = -np.asarray(vy) / speed, np.asarray(vx) / speed  # unit tangents, up to sign
-    x1, y1 = np.roll(kx, -1), np.roll(ky, -1)
+    x1, y1 = _following(kx), _following(ky)
     cx, cy = x1 - kx, y1 - ky  # chords, (N,)
     chord = np.hypot(cx, cy)
-    tx1, ty1 = np.roll(tx, -1), np.roll(ty, -1)
+    tx1, ty1 = _following(tx), _following(ty)
     # Point each tangent along its segment, and scale it by the chord length.
     start = np.sign(tx * cx + ty * cy) * chord
     end = np.sign(tx1 * cx + ty1 * cy) * chord
