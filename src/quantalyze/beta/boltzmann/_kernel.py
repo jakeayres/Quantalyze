@@ -1,14 +1,22 @@
 """Numba O(N) Chambers kernel (private). The only module that imports numba for it.
 
-The same recursion as the NumPy kernel: one exact exponential-integrator step per
-segment, w_{n+1} = e^{−z_n} w_n + h_n [v_n φ₂(z_n) + v_{n+1}(φ₁(z_n) − φ₂(z_n))], a
-first pass from w_0 = 0 to get S = w_N, the periodic closure w_0 = S/(1 − e^{−Z}),
-then a second pass that accumulates σ.
+The same model as the NumPy kernel: in the damping coordinate g = ∫ds/τ the mean free
+path ℓ = vτ is linear on each segment, and both the history step
+w_b = e^{−z} w_a + z [p₁ a + (p₀ − p₁) b] and each segment's ∫ ℓ_i w_j dg are exact.
 
-The reversed orbit (what the opposite field produces) crosses the same segments in
-the opposite direction, so it has the same z_n. `orbit_sums_both` therefore computes
-each segment's weights once per field and runs both orientations from them, which
-is what symmetrisation needs.
+Each segment's ∫ ℓ_i w_j dg is the part carried in from w_a plus a local part that
+does not involve w. The local parts are summed once per field, while the segment
+weights are computed, in terms of u = a + b and d = b − a:
+Δg z [α u_i u_j + β d_i d_j + γ (u_i d_j − d_i u_j)] with α = (p₀ − p₁)/4,
+β = (p₀/3 − p₁ + 2p₃/3)/4 and γ = (p₂ − p₁)/4. On the reversed orbit (what the opposite
+field produces) each segment is crossed the other way, which transposes its local
+part, so the reversed orbit reuses the sum's transpose.
+
+The carried part runs as a single pass per orientation. Writing w_n = w_n⁽⁰⁾ + P_n w_0,
+where w⁽⁰⁾ starts from zero and P_n = Π_{m<n} e^{−z_m}, it is Σ c_n·w_n⁽⁰⁾ + (Σ c_n P_n)·w_0.
+The closure w_0 = S/(1 − e^{−Z}), with S = w_N⁽⁰⁾, is known at the end of the pass, so no
+second pass is needed. Both orientations share each segment's weights (the reversed
+orbit has the same z_n), which is what symmetrisation and its Onsager check need.
 
 Determinism: each field is computed start to finish by one thread (`prange` over
 fields, serial loops over nodes), with no `fastmath`, so every sum is evaluated in
@@ -23,64 +31,103 @@ from __future__ import annotations
 import numpy as np
 from numba import get_num_threads, njit, prange
 
-from ._kernel_py import _MEDIUM_Z, _PHI1_SMALL, _PHI2_MEDIUM, _PHI2_SMALL, _SMALL_Z
+from ._kernel_py import _P3_LONG, _P3_SHORT, _THIRD, SERIES_Z, SMALL_Z
+
+# Rows of the per-segment weights: e^{−z} and the history weights z p₁ and z(p₀ − p₁) on
+# the start and end nodes. The same two, swapped and times |B| (Δg = |B| z), weight ℓ at
+# the start and end nodes against the w carried in.
+_ROWS = 3
 
 
 @njit(cache=True)
-def _horner(coefficients, z):
-    result = coefficients[-1]
-    for k in range(coefficients.size - 2, -1, -1):
-        result = result * z + coefficients[k]
-    return result
+def _series(coefficients, z):
+    """Σ c_j z^j as four interleaved Horner chains in z⁴ (their latencies overlap). The
+    coefficients are padded to a multiple of four, and all of them and z are positive."""
+    z2 = z * z
+    z4 = z2 * z2
+    k = coefficients.size - 4
+    s0 = coefficients[k]
+    s1 = coefficients[k + 1]
+    s2 = coefficients[k + 2]
+    s3 = coefficients[k + 3]
+    for k in range(coefficients.size - 8, -1, -4):
+        s0 = s0 * z4 + coefficients[k]
+        s1 = s1 * z4 + coefficients[k + 1]
+        s2 = s2 * z4 + coefficients[k + 2]
+        s3 = s3 * z4 + coefficients[k + 3]
+    return (s0 + z * s1) + z2 * (s2 + z * s3)
 
 
 @njit(cache=True)
-def phi(z):
-    """(φ₁(z), φ₂(z)) for one z ≥ 0: φ₁ = (1 − e^{−z})/z, φ₂ = (1 − (1+z)e^{−z})/z²."""
-    if z < _SMALL_Z:  # Taylor through z⁵: the closed forms cancel catastrophically here
-        return _horner(_PHI1_SMALL, z), _horner(_PHI2_SMALL, z)
-    p1 = -np.expm1(-z) / z
-    if z < _MEDIUM_Z:  # φ₂'s closed form still loses ~4e-14 here; sum its series instead
-        return p1, _horner(_PHI2_MEDIUM, z)
-    return p1, (-np.expm1(-z) - z * np.exp(-z)) / z / z  # e^{−z} → 0 is fine; never divide by it
+def moments(z):
+    """(e^{−z}, p₀, p₁, p₂, p₃) for one z ≥ 0, with p_k = ∫₀¹ r^k e^{−zr} dr."""
+    decay = np.exp(-z)
+    if z < SERIES_Z:  # positive series for p₃, then the (all-positive) downward recurrence
+        series = _series(_P3_SHORT, z) if z < SMALL_Z else _series(_P3_LONG, z)
+        p3 = 6.0 * decay * series
+        p2 = (z * p3 + decay) * _THIRD
+        p1 = (z * p2 + decay) * 0.5
+        return decay, z * p1 + decay, p1, p2, p3
+    inverse = 1.0 / z  # the upward recurrence is stable here; e^{−z} → 0 is fine
+    p0 = (1.0 - decay) * inverse
+    p1 = (p0 - decay) * inverse
+    p2 = (2.0 * p1 - decay) * inverse
+    return decay, p0, p1, p2, (3.0 * p2 - decay) * inverse
 
 
 @njit(cache=True)
-def _segment_weights(s, gamma, b, decay, start, end):
-    """Fill e^{−z_n}, h_n φ₂(z_n) and h_n(φ₁ − φ₂) for every segment at field |B| = b;
-    return Z = Σ z_n. One expm1 per segment gives e^{−z}, φ₁ and (for z ≥ 1) φ₂."""
+def _segment(g, inverse_field, weights, n):
+    """Fill segment n's weights; return z_n and the local-part weights Δg z (α, β, γ)."""
+    z = g * inverse_field
+    decay, p0, p1, p2, p3 = moments(z)
+    weights[0, n] = decay
+    weights[1, n] = z * p1
+    weights[2, n] = z * (p0 - p1)
+    k = 0.25 * g * z
+    return z, k * (p0 - p1), k * (p0 * _THIRD - p1 + 2.0 * p3 * _THIRD), k * (p2 - p1)
+
+
+@njit(cache=True)
+def _segment_weights(damping, lx, ly, b, weights):
+    """Fill every segment's weights at field |B| = b. Returns Z = Σ z_n and the local parts
+    Σ Δg z [M_aa (a_i a_j + b_i b_j) + M_ab a_i b_j + M_ba b_i a_j], in the forward order."""
+    n_nodes = damping.size
+    inverse_field = 1.0 / b
     total = 0.0
-    for n in range(s.size):
-        h = s[n] / b
-        z = gamma[n] * h
-        e = np.expm1(-z)  # e^{−z} − 1, accurate for small z
-        if z < _SMALL_Z:
-            p1 = _horner(_PHI1_SMALL, z)
-            p2 = _horner(_PHI2_SMALL, z)
-        else:
-            p1 = -e / z
-            if z < _MEDIUM_Z:
-                p2 = _horner(_PHI2_MEDIUM, z)
-            else:
-                p2 = (-e - z * (1.0 + e)) / z / z
-        decay[n] = 1.0 + e
-        start[n] = h * p2
-        end[n] = h * (p1 - p2)
+    xx = 0.0
+    xy = 0.0
+    yx = 0.0
+    yy = 0.0
+    for n in range(n_nodes):
+        q = n + 1 if n + 1 < n_nodes else 0
+        z, alpha, beta, gamma = _segment(damping[n], inverse_field, weights, n)
+        ux, uy = lx[n] + lx[q], ly[n] + ly[q]
+        dx, dy = lx[q] - lx[n], ly[q] - ly[n]
+        symmetric = alpha * ux * uy + beta * dx * dy
+        antisymmetric = gamma * (ux * dy - dx * uy)
+        xx += alpha * ux * ux + beta * dx * dx
+        xy += symmetric + antisymmetric
+        yx += symmetric - antisymmetric
+        yy += alpha * uy * uy + beta * dy * dy
         total += z
-    return total
+    return total, xx, xy, yx, yy
 
 
 @njit(cache=True)
-def _sweep(decay, start, end, s, vx, vy, total, reverse):
-    """σ sums over one orbit, given the segment weights. Forwards, segment n runs from
-    node n to n+1. Reversed, the orbit starts at node 0 and crosses segment j = N−1−m
-    from node j+1 to node j at step m."""
-    n_nodes = s.size
-
-    # Pass 1: one orbit from w = 0 gives S; the closure w_0 = S/(1 − e^{−Z}) sums every
-    # earlier orbit (expm1 keeps it accurate when Z is small).
-    wx = 0.0
+def _sweep(weights, lx, ly, total, reverse):
+    """The carried part of the orbit sums over one orientation, divided by |B|. Forwards,
+    segment n runs from node n to n+1. Reversed, the orbit starts at node 0 and crosses
+    segment j = N−1−m from node j+1 to node j at step m."""
+    n_nodes = lx.size
+    wx = 0.0  # w⁽⁰⁾, the history started from zero
     wy = 0.0
+    decay = 1.0  # P_n
+    xx = 0.0
+    xy = 0.0
+    yx = 0.0
+    yy = 0.0
+    cx = 0.0  # Σ c_n P_n, what w_0 multiplies
+    cy = 0.0
     for m in range(n_nodes):
         if reverse:
             j = n_nodes - 1 - m
@@ -90,67 +137,53 @@ def _sweep(decay, start, end, s, vx, vy, total, reverse):
             j = m
             p = m
             q = m + 1 if m + 1 < n_nodes else 0
-        wx = decay[j] * wx + start[j] * vx[p] + end[j] * vx[q]
-        wy = decay[j] * wy + start[j] * vy[p] + end[j] * vy[q]
+        ax, ay, bx, by = lx[p], ly[p], lx[q], ly[q]
+        ox = weights[2, j] * ax + weights[1, j] * bx  # what w_a is weighted by in ∫ ℓ_i w_j dg, over |B|
+        oy = weights[2, j] * ay + weights[1, j] * by
+        xx += ox * wx
+        xy += ox * wy
+        yx += oy * wx
+        yy += oy * wy
+        cx += ox * decay
+        cy += oy * decay
+        wx = weights[0, j] * wx + weights[1, j] * ax + weights[2, j] * bx
+        wy = weights[0, j] * wy + weights[1, j] * ay + weights[2, j] * by
+        decay *= weights[0, j]
+    # The closure w_0 = S/(1 − e^{−Z}) sums every earlier orbit (expm1 keeps it accurate
+    # when Z is small).
     closure = -np.expm1(-total)
     w0x = wx / closure
     w0y = wy / closure
-
-    # Pass 2: w node by node, accumulating the trapezoid over each segment.
-    wx = w0x
-    wy = w0y
-    xx = 0.0
-    xy = 0.0
-    yx = 0.0
-    yy = 0.0
-    for m in range(n_nodes):
-        if reverse:
-            j = n_nodes - 1 - m
-            p = j + 1 if j + 1 < n_nodes else 0
-            q = j
-        else:
-            j = m
-            p = m
-            q = m + 1 if m + 1 < n_nodes else 0
-        if m == n_nodes - 1:  # the orbit closes on w_0
-            nx = w0x
-            ny = w0y
-        else:
-            nx = decay[j] * wx + start[j] * vx[p] + end[j] * vx[q]
-            ny = decay[j] * wy + start[j] * vy[p] + end[j] * vy[q]
-        half = 0.5 * s[j]
-        xx += half * (vx[p] * wx + vx[q] * nx)
-        xy += half * (vx[p] * wy + vx[q] * ny)
-        yx += half * (vy[p] * wx + vy[q] * nx)
-        yy += half * (vy[p] * wy + vy[q] * ny)
-        wx = nx
-        wy = ny
-    return xx, xy, yx, yy
+    return xx + cx * w0x, xy + cx * w0y, yx + cy * w0x, yy + cy * w0y
 
 
 @njit(parallel=True, cache=True)
-def _orbit_sums_blocks(s, gamma, vx, vy, field, n_blocks, both):
+def _orbit_sums_blocks(damping, lx, ly, field, n_blocks, both):
     """The parallel kernel: fields in `n_blocks` contiguous blocks, one per thread.
 
     Returns an array of shape (2, nB, 2, 2): [0] forwards, [1] on the reversed orbit
     (left as zeros unless `both`).
     """
-    n_nodes = s.size
+    n_nodes = damping.size
     n_fields = field.size
     result = np.zeros((2, n_fields, 2, 2))
-    scratch = np.empty((n_blocks, 3, n_nodes))  # each block's segment weights
+    scratch = np.empty((n_blocks, _ROWS, n_nodes))  # each block's segment weights
     for block in prange(n_blocks):
-        decay = scratch[block, 0]
-        start = scratch[block, 1]
-        end = scratch[block, 2]
+        weights = scratch[block]
         for f in range(block * n_fields // n_blocks, (block + 1) * n_fields // n_blocks):
-            total = _segment_weights(s, gamma, field[f], decay, start, end)
-            for orientation in range(2 if both else 1):
-                xx, xy, yx, yy = _sweep(decay, start, end, s, vx, vy, total, orientation == 1)
-                result[orientation, f, 0, 0] = xx
-                result[orientation, f, 0, 1] = xy
-                result[orientation, f, 1, 0] = yx
-                result[orientation, f, 1, 1] = yy
+            b = field[f]
+            total, lxx, lxy, lyx, lyy = _segment_weights(damping, lx, ly, b, weights)
+            xx, xy, yx, yy = _sweep(weights, lx, ly, total, False)
+            result[0, f, 0, 0] = b * xx + lxx
+            result[0, f, 0, 1] = b * xy + lxy
+            result[0, f, 1, 0] = b * yx + lyx
+            result[0, f, 1, 1] = b * yy + lyy
+            if both:  # the reversed orbit crosses every segment the other way: local part transposed
+                xx, xy, yx, yy = _sweep(weights, lx, ly, total, True)
+                result[1, f, 0, 0] = b * xx + lxx
+                result[1, f, 0, 1] = b * xy + lyx
+                result[1, f, 1, 0] = b * yx + lxy
+                result[1, f, 1, 1] = b * yy + lyy
     return result
 
 
@@ -158,50 +191,85 @@ def _blocks(n_fields: int) -> int:
     return max(1, min(get_num_threads(), n_fields))
 
 
-def orbit_sums_both(s, gamma, vx, vy, field):
+def orbit_sums_both(damping, lx, ly, field):
     """Orbit sums for the nodes' own orientation and for the reversed orbit.
 
     Args:
-        s: Geometric time of each segment (s·T), float64 of shape (N,).
-        gamma: Scattering rate on each segment (s⁻¹), float64 of shape (N,).
-        vx: Node velocities v_x (m/s), float64 of shape (N,).
-        vy: Node velocities v_y (m/s), float64 of shape (N,).
+        damping: Damping Δg_n = ∫ds/τ of each segment (T), float64 of shape (N,).
+        lx: Mean free paths ℓ_x = v_x τ at the nodes (m), float64 of shape (N,).
+        ly: Mean free paths ℓ_y (m), float64 of shape (N,).
         field: Field magnitudes |B| > 0 (T), float64 of shape (nB,).
 
     Returns:
         ndarray of shape (2, nB, 2, 2): [0] with the nodes in the given order of motion,
-        [1] on the reversed orbit (node order 0, N−1, …, 1). Each is
-        Σ_n ½ s_n (v_{i,n} w_{j,n} + v_{i,n+1} w_{j,n+1}), σ without g_s e³/4π²ħ²d.
+        [1] on the reversed orbit (node order 0, N−1, …, 1). Each is Σ ∫ ℓ_i w_j dg over
+        the segments, σ without g_s e³/4π²ħ²d.
     """
-    return _orbit_sums_blocks(s, gamma, vx, vy, field, _blocks(field.size), True)
+    return _orbit_sums_blocks(damping, lx, ly, field, _blocks(field.size), True)
 
 
-def orbit_sums(s, gamma, vx, vy, field):
+def orbit_sums(damping, lx, ly, field):
     """Orbit sums with the nodes in the given order of motion: σ without g_s e³/4π²ħ²d.
 
     Args:
-        s: Geometric time of each segment (s·T), float64 of shape (N,).
-        gamma: Scattering rate on each segment (s⁻¹), float64 of shape (N,).
-        vx: Node velocities v_x (m/s), float64 of shape (N,).
-        vy: Node velocities v_y (m/s), float64 of shape (N,).
+        damping: Damping Δg_n = ∫ds/τ of each segment (T), float64 of shape (N,).
+        lx: Mean free paths ℓ_x = v_x τ at the nodes (m), float64 of shape (N,).
+        ly: Mean free paths ℓ_y (m), float64 of shape (N,).
         field: Field magnitudes |B| > 0 (T), float64 of shape (nB,).
 
     Returns:
         ndarray of shape (nB, 2, 2).
     """
-    return _orbit_sums_blocks(s, gamma, vx, vy, field, _blocks(field.size), False)[0]
+    return _orbit_sums_blocks(damping, lx, ly, field, _blocks(field.size), False)[0]
 
 
 # k_z-warped surfaces: each slice is an in-plane orbit (B ∥ ẑ keeps k_z fixed) that
-# carries v_z along with it, so the same recursion runs on three velocity components.
+# carries ℓ_z along with it, so the same recursion runs on three components.
 
 @njit(cache=True)
-def _sweep3(decay, start, end, s, vx, vy, vz, total, reverse, out):
-    """As `_sweep` with (v_x, v_y, v_z): writes the 3×3 orbit sums into `out`."""
-    n_nodes = s.size
+def _segment_weights3(damping, lx, ly, lz, b, weights, local):
+    """As `_segment_weights` with (ℓ_x, ℓ_y, ℓ_z): the local parts go into `local` (3×3)."""
+    n_nodes = damping.size
+    inverse_field = 1.0 / b
+    total = 0.0
+    for i in range(3):
+        for k in range(3):
+            local[i, k] = 0.0
+    for n in range(n_nodes):
+        q = n + 1 if n + 1 < n_nodes else 0
+        z, alpha, beta, gamma = _segment(damping[n], inverse_field, weights, n)
+        u0, u1, u2 = lx[n] + lx[q], ly[n] + ly[q], lz[n] + lz[q]
+        d0, d1, d2 = lx[q] - lx[n], ly[q] - ly[n], lz[q] - lz[n]
+        local[0, 0] += alpha * u0 * u0 + beta * d0 * d0
+        local[1, 1] += alpha * u1 * u1 + beta * d1 * d1
+        local[2, 2] += alpha * u2 * u2 + beta * d2 * d2
+        s01, a01 = alpha * u0 * u1 + beta * d0 * d1, gamma * (u0 * d1 - d0 * u1)
+        s02, a02 = alpha * u0 * u2 + beta * d0 * d2, gamma * (u0 * d2 - d0 * u2)
+        s12, a12 = alpha * u1 * u2 + beta * d1 * d2, gamma * (u1 * d2 - d1 * u2)
+        local[0, 1] += s01 + a01
+        local[1, 0] += s01 - a01
+        local[0, 2] += s02 + a02
+        local[2, 0] += s02 - a02
+        local[1, 2] += s12 + a12
+        local[2, 1] += s12 - a12
+        total += z
+    return total
+
+
+@njit(cache=True)
+def _sweep3(weights, lx, ly, lz, total, reverse, out):
+    """As `_sweep` with (ℓ_x, ℓ_y, ℓ_z): writes the 3×3 carried part (over |B|) into `out`."""
+    n_nodes = lx.size
     w0 = 0.0
     w1 = 0.0
     w2 = 0.0
+    decay = 1.0
+    c0 = 0.0
+    c1 = 0.0
+    c2 = 0.0
+    for i in range(3):
+        for k in range(3):
+            out[i, k] = 0.0
     for m in range(n_nodes):
         if reverse:
             j = n_nodes - 1 - m
@@ -211,77 +279,71 @@ def _sweep3(decay, start, end, s, vx, vy, vz, total, reverse, out):
             j = m
             p = m
             q = m + 1 if m + 1 < n_nodes else 0
-        w0 = decay[j] * w0 + start[j] * vx[p] + end[j] * vx[q]
-        w1 = decay[j] * w1 + start[j] * vy[p] + end[j] * vy[q]
-        w2 = decay[j] * w2 + start[j] * vz[p] + end[j] * vz[q]
+        a0, a1, a2 = lx[p], ly[p], lz[p]
+        b0, b1, b2 = lx[q], ly[q], lz[q]
+        o0 = weights[2, j] * a0 + weights[1, j] * b0
+        o1 = weights[2, j] * a1 + weights[1, j] * b1
+        o2 = weights[2, j] * a2 + weights[1, j] * b2
+        out[0, 0] += o0 * w0
+        out[0, 1] += o0 * w1
+        out[0, 2] += o0 * w2
+        out[1, 0] += o1 * w0
+        out[1, 1] += o1 * w1
+        out[1, 2] += o1 * w2
+        out[2, 0] += o2 * w0
+        out[2, 1] += o2 * w1
+        out[2, 2] += o2 * w2
+        c0 += o0 * decay
+        c1 += o1 * decay
+        c2 += o2 * decay
+        w0 = weights[0, j] * w0 + weights[1, j] * a0 + weights[2, j] * b0
+        w1 = weights[0, j] * w1 + weights[1, j] * a1 + weights[2, j] * b1
+        w2 = weights[0, j] * w2 + weights[1, j] * a2 + weights[2, j] * b2
+        decay *= weights[0, j]
     closure = -np.expm1(-total)
     first0 = w0 / closure
     first1 = w1 / closure
     first2 = w2 / closure
-
-    for i in range(3):
-        for k in range(3):
-            out[i, k] = 0.0
-    w0 = first0
-    w1 = first1
-    w2 = first2
-    for m in range(n_nodes):
-        if reverse:
-            j = n_nodes - 1 - m
-            p = j + 1 if j + 1 < n_nodes else 0
-            q = j
-        else:
-            j = m
-            p = m
-            q = m + 1 if m + 1 < n_nodes else 0
-        if m == n_nodes - 1:  # the orbit closes on w_0
-            n0 = first0
-            n1 = first1
-            n2 = first2
-        else:
-            n0 = decay[j] * w0 + start[j] * vx[p] + end[j] * vx[q]
-            n1 = decay[j] * w1 + start[j] * vy[p] + end[j] * vy[q]
-            n2 = decay[j] * w2 + start[j] * vz[p] + end[j] * vz[q]
-        half = 0.5 * s[j]
-        vp0, vp1, vp2 = vx[p], vy[p], vz[p]
-        vq0, vq1, vq2 = vx[q], vy[q], vz[q]
-        out[0, 0] += half * (vp0 * w0 + vq0 * n0)
-        out[0, 1] += half * (vp0 * w1 + vq0 * n1)
-        out[0, 2] += half * (vp0 * w2 + vq0 * n2)
-        out[1, 0] += half * (vp1 * w0 + vq1 * n0)
-        out[1, 1] += half * (vp1 * w1 + vq1 * n1)
-        out[1, 2] += half * (vp1 * w2 + vq1 * n2)
-        out[2, 0] += half * (vp2 * w0 + vq2 * n0)
-        out[2, 1] += half * (vp2 * w1 + vq2 * n1)
-        out[2, 2] += half * (vp2 * w2 + vq2 * n2)
-        w0 = n0
-        w1 = n1
-        w2 = n2
+    out[0, 0] += c0 * first0
+    out[0, 1] += c0 * first1
+    out[0, 2] += c0 * first2
+    out[1, 0] += c1 * first0
+    out[1, 1] += c1 * first1
+    out[1, 2] += c1 * first2
+    out[2, 0] += c2 * first0
+    out[2, 1] += c2 * first1
+    out[2, 2] += c2 * first2
 
 
 @njit(parallel=True, cache=True)
-def _orbit_sums_blocks3(s, gamma, vx, vy, vz, field, n_blocks, both):
+def _orbit_sums_blocks3(damping, lx, ly, lz, field, n_blocks, both):
     """The parallel 3×3 kernel, as `_orbit_sums_blocks`. Shape (2, nB, 3, 3)."""
-    n_nodes = s.size
+    n_nodes = damping.size
     n_fields = field.size
     result = np.zeros((2, n_fields, 3, 3))
-    scratch = np.empty((n_blocks, 3, n_nodes))
+    scratch = np.empty((n_blocks, _ROWS, n_nodes))
+    locals_ = np.empty((n_blocks, 3, 3))  # each block's local parts
     for block in prange(n_blocks):
-        decay = scratch[block, 0]
-        start = scratch[block, 1]
-        end = scratch[block, 2]
+        weights = scratch[block]
+        local = locals_[block]
         for f in range(block * n_fields // n_blocks, (block + 1) * n_fields // n_blocks):
-            total = _segment_weights(s, gamma, field[f], decay, start, end)
+            b = field[f]
+            total = _segment_weights3(damping, lx, ly, lz, b, weights, local)
             for orientation in range(2 if both else 1):
-                _sweep3(decay, start, end, s, vx, vy, vz, total, orientation == 1, result[orientation, f])
+                out = result[orientation, f]
+                _sweep3(weights, lx, ly, lz, total, orientation == 1, out)
+                for i in range(3):
+                    for k in range(3):
+                        # the reversed orbit crosses every segment the other way: transposed
+                        out[i, k] = b * out[i, k] + (local[k, i] if orientation == 1 else local[i, k])
     return result
 
 
-def orbit_sums_both3(s, gamma, vx, vy, vz, field):
+def orbit_sums_both3(damping, lx, ly, lz, field):
     """3×3 orbit sums on the orbit and on the reversed orbit, shape (2, nB, 3, 3)."""
-    return _orbit_sums_blocks3(s, gamma, vx, vy, vz, field, _blocks(field.size), True)
+    return _orbit_sums_blocks3(damping, lx, ly, lz, field, _blocks(field.size), True)
 
 
-def orbit_sums3(s, gamma, vx, vy, vz, field):
+def orbit_sums3(damping, lx, ly, lz, field):
     """3×3 orbit sums with the nodes in the given order of motion, shape (nB, 3, 3)."""
-    return _orbit_sums_blocks3(s, gamma, vx, vy, vz, field, _blocks(field.size), False)[0]
+    return _orbit_sums_blocks3(damping, lx, ly, lz, field, _blocks(field.size), False)[0]

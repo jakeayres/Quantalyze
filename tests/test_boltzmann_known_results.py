@@ -11,6 +11,7 @@ import pytest
 
 from quantalyze.beta import boltzmann as bz
 from quantalyze.beta.boltzmann import _analytic as an
+from quantalyze.beta.boltzmann import _reference as ref
 from quantalyze.beta.boltzmann import generators as gen
 from quantalyze.beta.boltzmann import scattering as sc
 from quantalyze.beta.boltzmann._contour import prepare_contour
@@ -185,10 +186,10 @@ def transport(dfs, fields, backend, **kwargs):
 
 
 def orbit_x(df, field):
-    """ω_cτ averaged round the orbit: 2π|B| / Σ γ_n s_n, i.e. 2π over the damping per orbit.
-    It is eBτ/m for a circle with constant τ."""
+    """ω_cτ averaged round the orbit: 2π|B| / Σ Δg_n, i.e. 2π over the damping per orbit
+    (∮ ds/τ = |B| times the damping). It is eBτ/m for a circle with constant τ."""
     c = prepare_contour(df["kx"], df["ky"], df["vx"], df["vy"], df["tau"])
-    return 2 * np.pi * np.abs(field) / np.sum(c.gamma * c.s)
+    return 2 * np.pi * np.abs(field) / np.sum(c.damping)
 
 
 def print_check(label, expected, actual):
@@ -200,15 +201,18 @@ def print_check(label, expected, actual):
 
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_k1_no_magnetoresistance_and_constant_hall_coefficient(backend):
-    """K1: for an isotropic Drude metal ρ_xx(B) = m/(ne²τ) at every B (|MR| < 1e-4) and
-    R_H = 1/(nq) = −1/(ne) at every B, including x = 0.01. R_H is unchanged when τ changes
-    by 10³ or when m changes at fixed n. Tolerance 1e-4."""
+    """K1: for an isotropic Drude metal ρ_xx(B) = m/(ne²τ) at every B, so |MR| < 1e-4·x²/(1 + x²)
+    (x = 10⁻⁴ and 10⁻³ as well: an MR linear in |B|, a discretisation artefact, would fail
+    there), and R_H = 1/(nq) = −1/(ne) at every B, including x = 0.01. R_H is unchanged when τ
+    changes by 10³ or when m changes at fixed n. Tolerance 1e-4."""
     n = an.circle_density(K_F, D)
-    fields = np.concatenate([[0.0], X * M / (E * TAU)])
+    x = np.concatenate([[1e-4, 1e-3], X])
+    fields = np.concatenate([[0.0], x * M / (E * TAU)])
     s, rho_xx, _, r_h = transport(gen.circle(N, k_fermi=K_F, mass=M, tau=TAU), fields, backend)
     mr = bz.magnetoresistance(s).to_numpy()
-    print(f"K1: max |MR| = {np.max(np.abs(mr)):.1e}")
-    assert np.max(np.abs(mr)) < 1e-4
+    scaled = np.abs(mr[1:]) / (x**2 / (1 + x**2))
+    print("K1: |MR| (1 + x^2)/x^2 at x = " + ", ".join(f"{xi:g}: {m:.1e}" for xi, m in zip(x, scaled)))
+    assert mr[0] == 0.0 and np.all(scaled < 1e-4)
     assert print_check("K1 rho_xx = m/(ne^2 tau)", M / (n * E**2 * TAU), rho_xx) < 1e-4
     assert print_check("K1 R_H = -1/(ne)", -1 / (n * E), r_h[1:]) < 1e-4
     for label, df in [("tau x 1e3", gen.circle(N, k_fermi=K_F, mass=M, tau=1e3 * TAU)),
@@ -380,3 +384,105 @@ def test_k12b_warping_only_in_kz(backend):
     print(f"K12b: sigma_zz(0) = {s.sigma_zz.iloc[0]:.6e}; max |sigma_zz(B)/sigma_zz(0) - 1| = {zz:.1e}; "
           f"max |sigma_xz, sigma_zx, ...| / sqrt(sigma_xx sigma_zz) = {cross:.1e}")
     assert zz <= 1e-10 and cross <= 1e-10
+
+
+# ---------------------------------------------------------------------------
+# K13, K14: the low- and high-field expansions of any smooth closed pocket
+# ---------------------------------------------------------------------------
+
+def lopsided_k(p):
+    return K_F * (1 + 0.08 * np.cos(3 * p) + 0.05 * np.sin(2 * p + 0.3))
+
+
+def lopsided_dk(p):
+    return K_F * (-0.24 * np.sin(3 * p) + 0.10 * np.cos(2 * p + 0.3))
+
+
+def lopsided_tau(p):
+    return sc.hot_spot(p, TAU, strength=3.0, width=0.35, positions=(0.3, 2.0, 4.1))
+
+
+def k7_tau(p):
+    return sc.cos4phi(p, TAU, anisotropy=0.6)
+
+
+def fourfold_tau(p):
+    return sc.cos4phi(p, TAU, anisotropy=0.3)
+
+
+# name: (sampled contour of N nodes, the same pocket parametrised, cyclotron mass)
+POCKETS = {
+    "circle": (lambda n: gen.circle(n, k_fermi=K_F, mass=M, tau=TAU),
+               ref.ParametricContour.circle(k_fermi=K_F, mass=M, tau=TAU), M),
+    "K7 circle": (lambda n: gen.circle(n, k_fermi=K_F, mass=M, tau=k7_tau),
+                  ref.ParametricContour.circle(k_fermi=K_F, mass=M, tau=k7_tau), M),
+    "fourfold": (fourfold,
+                 ref.ParametricContour.polar(k_fermi=lambda p: 7.35e9 - 0.25e9 * np.cos(4 * p),
+                                             dk_fermi=lambda p: 1e9 * np.sin(4 * p), mass=5 * M, tau=fourfold_tau,
+                                             carrier="hole"), 5 * M),
+    "lopsided": (lambda n: gen.polar(n, k_fermi=lopsided_k, dk_fermi=lopsided_dk, mass=M, tau=lopsided_tau),
+                 ref.ParametricContour.polar(k_fermi=lopsided_k, dk_fermi=lopsided_dk, mass=M, tau=lopsided_tau), M),
+}
+
+
+def tensor(s):
+    return s[["sigma_xx", "sigma_xy", "sigma_yx", "sigma_yy"]].to_numpy().reshape(-1, 2, 2)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("pocket", POCKETS)
+def test_k13_low_field_expansion(backend, pocket):
+    """K13: in the damping coordinate g = ∫ds/τ, with ℓ = vτ and D = d/dg along the motion,
+    σ = σ⁽⁰⁾ + Bσ⁽¹⁾ + B²σ⁽²⁾ + O(B³) with σ⁽⁰⁾ = ∮ℓℓ dg, σ⁽¹⁾ = −∮ℓ_i Dℓ_j dg (Ong's ℓ-area;
+    N. P. Ong, PRB 43, 193 (1991)) and σ⁽²⁾ = −∮Dℓ_i Dℓ_j dg (the Jones–Zener expansion of the
+    Chambers integral), evaluated spectrally on the parametrised pocket. N = 1024. Checks
+    σ(0), R_H at x̄ = 10⁻⁵…10⁻³ against R_H(0), and MR/B² at x̄ = 10⁻⁵ and 10⁻⁴ against the
+    exact coefficient (|MR|/x̄² < 1e-4 on the circle, where it is 0). Tolerance 1e-3."""
+    make, contour, mass = POCKETS[pocket]
+    zeroth, first, second = an.jones_zener(contour, layer_spacing=D)
+    rho0, rho1, rho2 = an.low_field_resistivity(zeroth, first, second)
+    hall = 0.5 * (rho1[1, 0] - rho1[0, 1])
+    coefficient = rho2[0, 0] / rho0[0, 0]  # MR = coefficient · B² + O(B⁴)
+    xbar = np.array([1e-5, 1e-4, 1e-3])
+    fields = np.concatenate([[0.0], xbar * mass / (E * TAU)])
+    s, rho_xx, _, r_h = transport(make(1024), fields, backend)
+    zero_error = normwise(tensor(s)[0], zeroth)
+    print(f"K13 {pocket}: sigma(0) rel error {zero_error:.1e}")
+    assert zero_error < 1e-3
+    assert print_check(f"K13 {pocket}: R_H(x = 1e-5..1e-3) = R_H(0)", hall, r_h[1:]) < 1e-3
+    mr = rho_xx[1:3] / rho_xx[0] - 1
+    if pocket == "circle":
+        print(f"K13 circle: exact MR coefficient {coefficient:.1e}; |MR|/x^2 = {np.max(np.abs(mr) / xbar[:2]**2):.1e}")
+        assert np.all(np.abs(mr) / xbar[:2] ** 2 < 1e-4)
+    else:
+        assert print_check(f"K13 {pocket}: MR/B^2 = {coefficient:.6e} /T^2", coefficient, mr / fields[1:3] ** 2) < 1e-3
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("pocket", ["K7 circle", "fourfold", "lopsided"])
+def test_k14_high_field_expansion(backend, pocket):
+    """K14: σ = H⁽¹⁾/B + H⁽²⁾/B² + O(1/B³) with H⁽¹⁾ = ∮ℓ_i R_j dg, H⁽²⁾ = ∮R_iR_j dg and
+    R = D⁻¹ℓ, the real-space orbit (scaled by B) with zero mean over g; so the saturated
+    ρ(∞) = −H⁽¹⁾⁻¹H⁽²⁾H⁽¹⁾⁻¹ exactly, for any shape and τ (the high-field expansion of the
+    Chambers integral; cf. Lifshitz, Azbel and Kaganov). N = 1024. Checks σ_sym·B² against H⁽²⁾
+    and ρ_xx, ρ_yy against ρ(∞) at x̄ = 10³, and that ρ approaches its limit as 1/B² with no
+    1/B term: [ρ(60) − ρ(10⁴)]/[ρ(30) − ρ(10⁴)] = 0.25 ± 0.01, taking ρ(∞) from the same
+    solver at x̄ = 10⁴ so that its own O(N⁻²) offset cancels. Tolerance 1e-3."""
+    make, contour, _ = POCKETS[pocket]
+    first, second = an.high_field(contour, layer_spacing=D)
+    _, saturated = an.high_field_resistivity(first, second)
+    df = make(1024)
+    xbar = np.array([30.0, 60.0, 1e3, 1e4])
+    fields = xbar / orbit_x(df, 1.0)
+    s = bz.conductivity(df, fields, layer_spacing=D, backend=backend)
+    sigma = tensor(s)
+    rho = bz.resistivity(s)[["rho_xx", "rho_xy", "rho_yx", "rho_yy"]].to_numpy().reshape(-1, 2, 2)
+    symmetric = 0.5 * (sigma[2] + sigma[2].T) * fields[2] ** 2
+    error = normwise(symmetric, second)
+    print(f"K14 {pocket}: sigma_sym B^2 vs H2: rel error {error:.1e}")
+    assert error < 1e-3
+    assert print_check(f"K14 {pocket}: rho_xx(1e3) = rho_xx(inf)", saturated[0, 0], rho[2, 0, 0]) < 1e-3
+    assert print_check(f"K14 {pocket}: rho_yy(1e3) = rho_yy(inf)", saturated[1, 1], rho[2, 1, 1]) < 1e-3
+    ratios = [(rho[1, i, i] - rho[3, i, i]) / (rho[0, i, i] - rho[3, i, i]) for i in range(2)]
+    print(f"K14 {pocket}: [rho(60) - rho(inf)] / [rho(30) - rho(inf)] = {ratios[0]:.4f} (xx), {ratios[1]:.4f} (yy)")
+    assert all(abs(r - 0.25) <= 0.01 for r in ratios)

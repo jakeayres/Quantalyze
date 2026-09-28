@@ -35,7 +35,7 @@ def sheets(n, warping=WARPING):
 def orbit_x(df, field):
     """ω_cτ over one period: 2π|B| / Σ γ_n s_n."""
     c = prepare_contour(*arrays(df), period=PERIOD)
-    return 2 * np.pi * abs(field) / np.sum(c.gamma * c.s)
+    return 2 * np.pi * abs(field) / np.sum(c.damping)
 
 
 def tensor(sigma):

@@ -3,8 +3,8 @@
 prepare_contour is the only place the contour contract is enforced. These tests
 check that it rejects bad input, drops a repeated closing point, orients the
 nodes along the carriers' motion (ħ dk/dt = q v × B with B = +B ẑ), computes
-the segment geometric times s_n and rates γ_n, and removes the discretisation
-drift so that the trapezoid ∮ v dt vanishes.
+the segment geometric times s_n, dampings Δg_n and mean free paths ℓ_n = v_n τ_n,
+and removes the discretisation drift so that the model's ∮ ℓ dg vanishes.
 """
 import warnings
 
@@ -21,7 +21,7 @@ K_F = 7.0e9  # m⁻¹
 TAU = 1.0e-13  # s
 A = 3.87e-10  # m
 
-FIELDS = ("kx", "ky", "vx", "vy", "tau", "s", "gamma")
+FIELDS = ("kx", "ky", "vx", "vy", "tau", "s", "damping", "lx", "ly")
 
 
 def arrays(df):
@@ -60,19 +60,22 @@ def cyclic_difference(a: PreparedContour, b: PreparedContour):
     worst = 0.0
     for name in FIELDS:
         x, y = getattr(a, name), np.roll(getattr(b, name), -shift)
-        scale = np.max(np.abs(np.concatenate([a.vx, a.vy]))) if name in ("vx", "vy") else np.max(np.abs(x))
+        if name in ("vx", "vy", "lx", "ly"):  # components share one scale
+            pair = (a.vx, a.vy) if name in ("vx", "vy") else (a.lx, a.ly)
+            scale = np.max(np.abs(np.concatenate(pair)))
+        else:
+            scale = np.max(np.abs(x))
         worst = max(worst, np.max(np.abs(x - y)) / scale)
     return worst
 
 
-def drift_sum(c: PreparedContour, vx=None, vy=None):
-    """|Σ ½ s_n (v_n + v_{n+1})| relative to Σ ½ s_n (|v_n| + |v_{n+1}|)."""
-    vx = c.vx if vx is None else vx
-    vy = c.vy if vy is None else vy
-    sx = np.sum(0.5 * c.s * (vx + np.roll(vx, -1)))
-    sy = np.sum(0.5 * c.s * (vy + np.roll(vy, -1)))
-    speed = np.hypot(vx, vy)
-    return np.hypot(sx, sy) / np.sum(0.5 * c.s * (speed + np.roll(speed, -1)))
+def drift_sum(c: PreparedContour):
+    """|Σ ½ Δg_n (ℓ_n + ℓ_{n+1})| relative to Σ ½ Δg_n (|ℓ_n| + |ℓ_{n+1}|): the model's
+    ∮ v dt = ∮ ℓ dg/|B|, relative to its scale."""
+    sx = np.sum(0.5 * c.damping * (c.lx + np.roll(c.lx, -1)))
+    sy = np.sum(0.5 * c.damping * (c.ly + np.roll(c.ly, -1)))
+    path = np.hypot(c.lx, c.ly)
+    return np.hypot(sx, sy) / np.sum(0.5 * c.damping * (path + np.roll(path, -1)))
 
 
 # ---------------------------------------------------------------------------
@@ -245,17 +248,16 @@ def test_orientation(carrier, charge, counter_clockwise):
         # every segment follows dk/dt ∝ q (v_y, −v_x)
         dkx = np.roll(prepared.kx, -1) - prepared.kx
         dky = np.roll(prepared.ky, -1) - prepared.ky
-        vx, vy = prepared.vx + prepared.drift[0], prepared.vy + prepared.drift[1]
-        assert np.all(np.sign(charge) * (dkx * vy - dky * vx) > 0)
+        assert np.all(np.sign(charge) * (dkx * prepared.vy - dky * prepared.vx) > 0)
 
 
 def test_hole_circle_is_the_electron_circle_run_backwards():
     """A hole circle with q = −e and an electron circle with q = +e trace the same orbit
-    in k-space with v reversed, so they prepare to identical s_n and γ_n."""
+    in k-space with v reversed, so they prepare to identical s_n and Δg_n."""
     hole = prepare_contour(*arrays(circle(carrier="hole")), charge=-E)
     electron = prepare_contour(*arrays(circle()), charge=+E)
     assert cyclic_difference(hole, electron) > 0  # velocities differ in sign...
-    for name in ("kx", "ky", "tau", "s", "gamma"):
+    for name in ("kx", "ky", "tau", "s", "damping"):
         np.testing.assert_array_equal(getattr(hole, name), getattr(electron, name))
     np.testing.assert_array_equal(hole.vx, -electron.vx)
 
@@ -280,18 +282,34 @@ def test_reversed_and_rotated_input_give_the_same_contour(make, charge):
 
 
 # ---------------------------------------------------------------------------
-# Segment times, rates and drift removal
+# Segment times, damping, mean free paths and drift removal
 # ---------------------------------------------------------------------------
 
-def test_segment_time_and_rate_formulas():
-    """s_n = (ħ|Δk_n|/2e)(1/|v_n| + 1/|v_{n+1}|), γ_n = ½(1/τ_n + 1/τ_{n+1})."""
+def test_segment_time_damping_and_mean_free_path_formulas():
+    """s_n = (ħ|Δk_n|/2e)(1/|v_n| + 1/|v_{n+1}|), Δg_n = 2s_n/(τ_n + τ_{n+1}) and ℓ_n = v_n τ_n."""
     prepared = prepare_contour(*arrays(lopsided()), remove_drift=False)
     kx, ky, vx, vy, tau = prepared.kx, prepared.ky, prepared.vx, prepared.vy, prepared.tau
     length = np.hypot(np.roll(kx, -1) - kx, np.roll(ky, -1) - ky)
     speed = np.hypot(vx, vy)
     np.testing.assert_allclose(prepared.s, HBAR * length / (2 * E) * (1 / speed + 1 / np.roll(speed, -1)),
                                rtol=1e-15)
-    np.testing.assert_allclose(prepared.gamma, 0.5 * (1 / tau + 1 / np.roll(tau, -1)), rtol=1e-15)
+    np.testing.assert_allclose(prepared.damping, 2 * prepared.s / (tau + np.roll(tau, -1)), rtol=1e-15)
+    np.testing.assert_array_equal(prepared.lx, vx * tau)
+    np.testing.assert_array_equal(prepared.ly, vy * tau)
+    assert prepared.lz is None
+
+
+def test_orbit_damping_is_the_orbit_average_of_the_scattering_rate():
+    """Σ Δg_n → ∮ ds/τ = 2π m_c⟨1/τ⟩/e on a circle, with an O(N⁻²) discretisation error
+    (fitted slope in [−2.1, −1.9] over N = 256…4096)."""
+    expected = 2 * np.pi * ELECTRON_MASS / (E * TAU)  # ⟨1/τ⟩ = 1/τ₀ for the cos4φ model
+    sizes = np.array([256, 512, 1024, 2048, 4096])
+    errors = [abs(np.sum(prepare_contour(*arrays(gen.circle(
+        n, k_fermi=K_F, mass=ELECTRON_MASS, tau=lambda p: sc.cos4phi(p, TAU, anisotropy=0.6)))).damping)
+        / expected - 1) for n in sizes]
+    slope = np.polyfit(np.log(sizes), np.log(errors), 1)[0]
+    print("sum(damping) / (2 pi m <1/tau> / e) - 1: " + ", ".join(f"{e:.2e}" for e in errors) + f"; slope {slope:.3f}")
+    assert -2.1 <= slope <= -1.9
 
 
 @pytest.mark.parametrize("df, cyclotron_mass", [
@@ -315,19 +333,20 @@ def test_drift_removal(df):
     raw = prepare_contour(*arrays(df), remove_drift=False)
     removed = prepare_contour(*arrays(df))
     before = drift_sum(raw)
-    after = drift_sum(removed, vx=removed.vx, vy=removed.vy)
+    after = drift_sum(removed)
     print(f"relative drift before = {before:.2e}, after = {after:.2e}")
     assert after <= 1e-14
-    # s_n keeps the original |v|; only the velocities used downstream are shifted
-    np.testing.assert_array_equal(removed.s, raw.s)
-    np.testing.assert_array_equal(removed.gamma, raw.gamma)
+    # Δg_n keeps the original |ℓ|, and the velocities are left as given; only the mean
+    # free paths used downstream are shifted
+    for name in ("s", "damping", "vx", "vy"):
+        np.testing.assert_array_equal(getattr(removed, name), getattr(raw, name))
     np.testing.assert_array_equal(raw.drift, [0.0, 0.0])
-    np.testing.assert_allclose(removed.vx + removed.drift[0], raw.vx, rtol=0, atol=1e-15 * np.max(np.abs(raw.vx)))
-    np.testing.assert_allclose(removed.vy + removed.drift[1], raw.vy, rtol=0, atol=1e-15 * np.max(np.abs(raw.vy)))
+    np.testing.assert_allclose(removed.lx + removed.drift[0], raw.lx, rtol=0, atol=1e-15 * np.max(np.abs(raw.lx)))
+    np.testing.assert_allclose(removed.ly + removed.drift[1], raw.ly, rtol=0, atol=1e-15 * np.max(np.abs(raw.ly)))
 
 
 def test_drift_is_physical_discretisation_error_only():
-    """On a coarse lopsided pocket the trapezoid ∮ v dt is visibly non-zero, and it
+    """On a coarse lopsided pocket the model's ∮ ℓ dg is visibly non-zero, and it
     shrinks as O(N⁻²) under refinement: it is discretisation error, not physics."""
     drifts = [drift_sum(prepare_contour(*arrays(lopsided(n)), remove_drift=False)) for n in (64, 128, 256)]
     print("relative drift at N = 64, 128, 256:", ", ".join(f"{d:.2e}" for d in drifts))

@@ -14,8 +14,8 @@ field = np.linspace(0, 60, 61)
 sigma = bz.conductivity(sheets, field, layer_spacing=d, period=(0.0, G))
 rho = bz.resistivity(sigma)
 
-print(sigma.iloc[[0, 30, 60], :3])
-print(f"MR along x at 60 T: {rho.rho_xx.iloc[60] / rho.rho_xx.iloc[0] - 1:.3f}")
+print(sigma.iloc[[0, 30, 60], :2])
+print(f"rho_xx(60 T) / rho_xx(0): {rho.rho_xx.iloc[60] / rho.rho_xx.iloc[0]:.6f} (no MR along x)")
 print(f"MR along y at 60 T: {rho.rho_yy.iloc[60] / rho.rho_yy.iloc[0] - 1:.1f}")
 # --8<-- [end:example]
 

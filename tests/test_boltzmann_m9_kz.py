@@ -125,14 +125,14 @@ def test_numba_3x3_kernel_matches_numpy():
     worst = 0.0
     for kz in df.kz.unique():
         c = slice_arrays(df, kz)
-        order = np.roll(np.arange(c.s.size)[::-1], 1)
-        both = _kernel.orbit_sums_both3(c.s, c.gamma, c.vx, c.vy, c.vz, fields)
-        forward = _kernel_py.orbit_sums(c.s, c.gamma, c.vx, c.vy, fields, vz=c.vz)
-        backward = _kernel_py.orbit_sums(c.s[::-1], c.gamma[::-1], c.vx[order], c.vy[order], fields, vz=c.vz[order])
+        order = np.roll(np.arange(c.damping.size)[::-1], 1)
+        both = _kernel.orbit_sums_both3(c.damping, c.lx, c.ly, c.lz, fields)
+        forward = _kernel_py.orbit_sums(c.damping, c.lx, c.ly, fields, lz=c.lz)
+        backward = _kernel_py.orbit_sums(c.damping[::-1], c.lx[order], c.ly[order], fields, lz=c.lz[order])
         for actual, expected in ((both[0], forward), (both[1], backward)):
             worst = max(worst, np.max(np.max(np.abs(actual - expected), axis=(1, 2))
                                       / np.max(np.abs(expected), axis=(1, 2))))
-        np.testing.assert_array_equal(both[0], _kernel.orbit_sums3(c.s, c.gamma, c.vx, c.vy, c.vz, fields))
+        np.testing.assert_array_equal(both[0], _kernel.orbit_sums3(c.damping, c.lx, c.ly, c.lz, fields))
     print(f"max per-field relative difference, 3x3 numba vs NumPy: {worst:.1e}")
     assert worst <= 1e-12
 
@@ -146,7 +146,7 @@ def test_numba_3x3_kernel_is_deterministic_without_fastmath_or_loop_allocations(
         results = []
         for count in sorted({1, 3, numba.config.NUMBA_NUM_THREADS}):
             numba.set_num_threads(count)
-            results.append(_kernel.orbit_sums_both3(c.s, c.gamma, c.vx, c.vy, c.vz, fields))
+            results.append(_kernel.orbit_sums_both3(c.damping, c.lx, c.ly, c.lz, fields))
     finally:
         numba.set_num_threads(original)
     assert all(np.array_equal(r, results[0]) for r in results)
@@ -154,8 +154,7 @@ def test_numba_3x3_kernel_is_deterministic_without_fastmath_or_loop_allocations(
     kernel = _kernel._orbit_sums_blocks3
     options = {k: v for k, v in kernel.targetoptions.items() if k not in ("cache", "nopython")}
     fresh = numba.njit(**options)(kernel.py_func)
-    s = np.full(64, 1e-14)
-    fresh(s, s * 1e27, np.ones(64), np.ones(64), np.ones(64), np.array([1.0, 2.0]), 2, True)
+    fresh(np.full(64, 1e-2), np.ones(64), np.ones(64), np.ones(64), np.array([1.0, 2.0]), 2, True)
     ir = "\n".join(fresh.inspect_llvm().values())
     assert not [flag for flag in (" fast ", " reassoc ", " contract ", " nnan ", " arcp ", " afn ") if flag in ir]
     bodies = [body for body in re.split(r"\ndefine ", ir) if "__numba_parfor_gufunc" in body.split("{", 1)[0]]

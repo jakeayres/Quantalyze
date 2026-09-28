@@ -102,14 +102,18 @@ saturating (doubling B quadruples it), while R_H stays constant.
     - **Velocities are the group velocity ∇ε/ħ in m/s,** not unit vectors and not in
       eV·Å. The solver warns if they are not normal to the contour, which usually means
       they are in the wrong form (or the contour is too coarsely sampled).
-    - **Use enough points.** The error falls as N⁻²; N = 512 gives about 3 × 10⁻⁵ on a
-      simple pocket. The same error shows up as an apparent magnetoresistance of order
-      10⁻⁵ where the exact answer has none, so don't read physics into MR that small.
+    - **Use enough points.** The error falls as N⁻² at every field; N = 512 gives about
+      5 × 10⁻⁵ on a simple pocket, and more where τ or the curvature changes quickly
+      between neighbouring points. The discretisation adds no magnetoresistance of its
+      own: at low field σ(B) − σ(0) grows as B², as it physically must, so the shape of
+      the low-field MR is right even with few points and only its size carries the
+      O(N⁻²) error. To check a result, rerun it with twice the points.
     - **Contours must be closed, unless you pass `period`** (see [open orbits](#open-orbits)).
       Don't repeat the first point at the end; it is dropped if you do.
-    - **Symmetrisation is on by default** (`symmetrize=True`). It enforces
-      σ(−B) = σ(B)ᵀ and removes a small discretisation error in the low-field Hall
-      coefficient. Leave it on unless you are checking the raw numbers.
+    - **Onsager's relation σ(−B) = σ(B)ᵀ holds by construction.** With
+      `symmetrize=True` (the default) the solver also runs each orbit the other way
+      round and warns if the two ever disagree beyond rounding, which would mean a bug.
+      `symmetrize=False` skips that check, and is up to twice as fast for positive fields.
 
 ### Open orbits { #open-orbits }
 

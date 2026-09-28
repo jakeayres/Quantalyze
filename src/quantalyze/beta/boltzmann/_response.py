@@ -3,13 +3,17 @@
 `conductivity_tensor` is the array layer: it validates and orients the contour,
 runs a kernel for each sign of B, symmetrises, and applies the prefactor
 g_s e³ / (4π²ħ² d). Carriers on the reversed orbit are what a field of the
-opposite sign produces, so σ(−B) is the same kernel on the reversed node order.
+opposite sign produces, so σ(−B) is the same kernel on the reversed node order. The
+kernels solve a continuous model exactly, so σ(−B) = σ(B)ᵀ holds to rounding; when
+both orientations are computed, a disagreement beyond rounding is reported as a
+warning (it would mean a bug).
 
 `conductivity` is the DataFrame layer on top. It sums σ over pockets, and
 `resistivity`, `hall_coefficient` and `magnetoresistance` derive from its output.
 """
 from __future__ import annotations
 
+import warnings
 from typing import List, Optional, Sequence, Union
 
 import numpy as np
@@ -20,19 +24,21 @@ from . import _kernel, _kernel_py
 from ._contour import enclosed_area, prepare_contour
 
 _BACKENDS = ("python", "numba")
+# σ(−B) and σ(B)ᵀ agree to ~1e-15 of max|σ| (rounding); a larger difference is a bug.
+_ONSAGER_TOLERANCE = 1e-9
 
 
 def _orbit_sums_both(backend, forward, backward, field, both):
     """Orbit sums on the forward and (if `both`) the reversed orbit, shape (2, nB, d, d).
 
-    `forward` and `backward` are (s, γ, v_x, v_y) or (s, γ, v_x, v_y, v_z), so d = 2 or 3.
+    `forward` and `backward` are (Δg, ℓ_x, ℓ_y) or (Δg, ℓ_x, ℓ_y, ℓ_z), so d = 2 or 3.
     """
-    dim = len(forward) - 2
+    dim = len(forward) - 1
     missing = np.full((field.size, dim, dim), np.nan)
     if backend == "python":
         def run(arrays):
-            s, gamma, vx, vy, *vz = arrays
-            return _kernel_py.orbit_sums(s, gamma, vx, vy, field, vz=vz[0] if vz else None)
+            damping, lx, ly, *lz = arrays
+            return _kernel_py.orbit_sums(damping, lx, ly, field, lz=lz[0] if lz else None)
 
         return np.stack([run(forward), run(backward) if both else missing])
     # One compiled call does both: the reversed orbit shares every segment's weights.
@@ -43,17 +49,19 @@ def _orbit_sums_both(backend, forward, backward, field, both):
     return _kernel.orbit_sums_both3(*arrays, b) if both else np.stack([_kernel.orbit_sums3(*arrays, b), missing])
 
 
-def _zero_field_sums(s, gamma, *velocities):
-    """Σ_n v_n v_nᵀ ½(s_{n−1} + s_n)/γ_{n−1}: the recursion's exact limit as B → 0.
+def _zero_field_sums(damping, *paths):
+    """∮ ℓ_i ℓ_j dg with ℓ linear in g on each segment: the kernels' exact limit as B → 0.
 
-    As B → 0 the history at node n becomes v_n/γ_{n−1}, the rate on the segment the
-    carrier has just crossed (nodes in order of motion). Using the same discrete sum as
-    the field branch makes σ(B) join σ(0) with no jump. It is
-    σ_ij(0) = (g_s e²/4π²ħd) ∮ |dk| τ v_i v_j/|v| discretised, since s = ħ|dk|/(e|v|).
+    As B → 0 the history w becomes ℓ itself, so each segment contributes
+    Δg [⅓(a_i a_j + b_i b_j) + ⅙(a_i b_j + b_i a_j)], with a and b ℓ at its two ends. It
+    is σ_ij(0) = (g_s e²/4π²ħd) ∮ |dk| τ v_i v_j/|v| discretised, since dg = ħ|dk|/(e|v|τ);
+    it is the same for either orientation, and σ(B) departs from it as B².
     """
-    weight = 0.5 * (np.roll(s, 1) + s) / np.roll(gamma, 1)  # (N,)
-    v = np.stack(velocities, axis=1)  # (N, d)
-    return np.einsum("n,ni,nj->ij", weight, v, v)
+    ell = np.stack(paths, axis=1)  # (N, d)
+    ell_next = np.roll(ell, -1, axis=0)
+    third, sixth = damping / 3, damping / 6
+    return (np.einsum("n,ni,nj->ij", third, ell, ell) + np.einsum("n,ni,nj->ij", third, ell_next, ell_next)
+            + np.einsum("n,ni,nj->ij", sixth, ell, ell_next) + np.einsum("n,ni,nj->ij", sixth, ell_next, ell))
 
 
 def conductivity_tensor(
@@ -86,8 +94,9 @@ def conductivity_tensor(
             d = c/2, not c.
         charge: Carrier charge q (C), ±e.
         spin_degeneracy: Spin degeneracy g_s.
-        symmetrize: Replace σ(B) by ½[σ(B) + σ(−B)ᵀ], which removes the discretisation's
-            small breaking of Onsager symmetry (and a spurious 1/B term in low-field R_H).
+        symmetrize: Replace σ(B) by ½[σ(B) + σ(−B)ᵀ]. The solver satisfies Onsager's
+            relation σ(−B) = σ(B)ᵀ to rounding, so this changes σ only at that level; it
+            also checks the relation on every run, and warns if it fails.
         remove_drift: Remove the discretisation drift of a closed orbit's in-plane
             ∮ v dt (default: closed contours only; never on open orbits).
         period: Reciprocal-lattice vector (G_x, G_y) (m⁻¹) of an open orbit, or None.
@@ -100,6 +109,11 @@ def conductivity_tensor(
     Returns:
         ndarray of shape (nB, 2, 2), or (nB, 3, 3) with `vz`: σ with index order
         [[xx, xy, …], [yx, yy, …], …] (S/m).
+
+    Warns:
+        RuntimeWarning: If σ(−B) and σ(B)ᵀ, computed on the two orientations of the orbit,
+            differ by more than 1e-9 of max|σ| at some field. They agree to rounding, so
+            this signals a bug.
 
     Examples:
         >>> from quantalyze.beta import boltzmann as bz
@@ -118,11 +132,11 @@ def conductivity_tensor(
         raise ValueError("field must be finite")
 
     # The prepared order is the motion for B > 0; B < 0 runs the orbit backwards.
-    velocities = (contour.vx, contour.vy) if contour.vz is None else (contour.vx, contour.vy, contour.vz)
-    dim = len(velocities)
-    forward = (contour.s, contour.gamma, *velocities)
-    order = np.roll(np.arange(contour.s.size)[::-1], 1)  # node 0, N−1, …, 1
-    backward = (contour.s[::-1], contour.gamma[::-1], *(v[order] for v in velocities))
+    paths = (contour.lx, contour.ly) if contour.lz is None else (contour.lx, contour.ly, contour.lz)
+    dim = len(paths)
+    forward = (contour.damping, *paths)
+    order = np.roll(np.arange(contour.damping.size)[::-1], 1)  # node 0, N−1, …, 1
+    backward = (contour.damping[::-1], *(p[order] for p in paths))
 
     # Each distinct |B| is computed once, on both orientations; B = 0 has its own branch.
     magnitude = np.abs(fields)
@@ -132,9 +146,10 @@ def conductivity_tensor(
     if np.any(nonzero):
         both = symmetrize or bool(np.any(fields < 0))  # the reversed orbit is only sometimes needed
         sums[:, nonzero] = _orbit_sums_both(backend, forward, backward, unique[nonzero], both)
+        if both:
+            _check_onsager(sums[0, nonzero], sums[1, nonzero], unique[nonzero])
     if not np.all(nonzero):  # unique is sorted, so B = 0 comes first
-        sums[0, 0] = _zero_field_sums(*forward)
-        sums[1, 0] = _zero_field_sums(*backward)
+        sums[:, 0] = _zero_field_sums(*forward)
 
     along = np.where(fields[:, None, None] >= 0, sums[0, index], sums[1, index])  # σ(B), (nB, d, d)
     if symmetrize:
@@ -145,6 +160,23 @@ def conductivity_tensor(
 
     prefactor = spin_degeneracy * ELEMENTARY_CHARGE**3 / (4 * np.pi**2 * HBAR**2 * layer_spacing)
     return prefactor * result
+
+
+def _check_onsager(along, against, magnitude):
+    """Warn if σ(B) (`along`) and σ(−B)ᵀ (`against` transposed) differ beyond rounding."""
+    difference = np.max(np.abs(along - np.transpose(against, (0, 2, 1))), axis=(1, 2))  # (nB,)
+    scale = np.max(np.abs(along), axis=(1, 2))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        defect = np.where(scale > 0, difference / scale, difference)
+    worst = int(np.argmax(defect))
+    if not defect[worst] <= _ONSAGER_TOLERANCE:  # also catches NaN
+        warnings.warn(
+            f"Onsager check failed: sigma(-B) and sigma(B)^T differ by {defect[worst]:.1e} of max|sigma| at "
+            f"|B| = {magnitude[worst]:.6g} T. The solver satisfies this to rounding, so this is a bug; "
+            "please report it with the contour that triggers it",
+            RuntimeWarning,
+            stacklevel=3,
+        )
 
 
 _AXES = "xyz"
@@ -230,8 +262,9 @@ def conductivity(
         charge: Carrier charge q (C), ±e. Keep the default −e for band electrons: a
             hole-like pocket is described by its inward-pointing velocities.
         spin_degeneracy: Spin degeneracy g_s.
-        symmetrize: Enforce Onsager symmetry, σ(B) → ½[σ(B) + σ(−B)ᵀ]. This removes a
-            small discretisation error, including a spurious 1/B term in low-field R_H.
+        symmetrize: Return ½[σ(B) + σ(−B)ᵀ]. The solver satisfies Onsager's relation
+            σ(−B) = σ(B)ᵀ to rounding, so this changes σ only at that level; it also
+            computes both orientations of each orbit and warns if the relation fails.
         remove_drift: Remove the discretisation drift of each closed orbit's in-plane
             ∮ v dt, so σ_xx falls as 1/B² at high field instead of levelling off. The
             default (None) does this for closed contours only; on open orbits the drift
@@ -415,6 +448,5 @@ def carrier_density(
     areas = []
     for part in slices:
         contour = prepare_contour(part[kx], part[ky], part[vx], part[vy], 1.0)  # validates; τ plays no part
-        areas.append(enclosed_area(contour.kx, contour.ky, contour.vx + contour.drift[0],
-                                   contour.vy + contour.drift[1]))
+        areas.append(enclosed_area(contour.kx, contour.ky, contour.vx, contour.vy))
     return spin_degeneracy * float(np.mean(areas)) / (4 * np.pi**2 * layer_spacing)

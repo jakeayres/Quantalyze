@@ -4,7 +4,6 @@ It must reproduce the NumPy kernel (1e-12) on every test contour and field, give
 bitwise-identical results for any thread count, and be compiled without fastmath.
 """
 import re
-from decimal import Decimal, getcontext
 
 import numba
 import numpy as np
@@ -53,35 +52,17 @@ def per_field_error(a, b):
     return np.max(np.abs(a - b), axis=(1, 2)) / np.max(np.abs(b), axis=(1, 2))
 
 
-def test_phi_matches_high_precision_and_numpy():
-    getcontext().prec = 60
-    z = np.concatenate([[0.0], np.geomspace(1e-14, 1e3, 400), np.geomspace(0.9e-2, 1.1e-2, 50),
-                        np.geomspace(0.9, 1.1, 50), [1e300]])
-    numba_phi = np.array([_kernel.phi(v) for v in z])
-    numpy_phi = np.stack([_kernel_py.phi1(z), _kernel_py.phi2(z)], axis=1)
-    exact = []
-    for v in z[1:-1]:
-        x = Decimal(float(v))
-        e = (-x).exp()
-        exact.append((float((1 - e) / x), float((1 - (1 + x) * e) / (x * x))))
-    error = np.max(np.abs(numba_phi[1:-1] / np.array(exact) - 1))
-    print(f"numba phi vs 60-digit values: {error:.1e}; vs NumPy: {np.max(np.abs(numba_phi - numpy_phi)):.1e}")
-    assert error < 1e-14
-    np.testing.assert_allclose(numba_phi, numpy_phi, rtol=1e-15, atol=0)
-
-
 @pytest.mark.parametrize("name", CONTOURS)
 def test_matches_the_numpy_kernel(name):
     """Raw orbit sums on both orientations over twelve decades of ω_cτ."""
     df, mass = CONTOURS[name]
     fields = X * mass / (E * TAU)
     c = prepare_contour(*arrays(df))
-    order = np.roll(np.arange(c.s.size)[::-1], 1)
+    order = np.roll(np.arange(c.damping.size)[::-1], 1)
     worst = 0.0
-    for s, gamma, vx, vy in [(c.s, c.gamma, c.vx, c.vy),
-                             (c.s[::-1], c.gamma[::-1], c.vx[order], c.vy[order])]:
-        expected = _kernel_py.orbit_sums(s, gamma, vx, vy, fields)
-        actual = _kernel.orbit_sums(*(np.ascontiguousarray(a) for a in (s, gamma, vx, vy)), fields)
+    for damping, lx, ly in [(c.damping, c.lx, c.ly), (c.damping[::-1], c.lx[order], c.ly[order])]:
+        expected = _kernel_py.orbit_sums(damping, lx, ly, fields)
+        actual = _kernel.orbit_sums(*(np.ascontiguousarray(a) for a in (damping, lx, ly)), fields)
         worst = max(worst, per_field_error(actual, expected).max())
     print(f"{name}: max per-field relative difference from NumPy over x = 1e-6..1e6: {worst:.1e}")
     assert worst <= 1e-12
@@ -94,14 +75,14 @@ def test_both_orientations_kernel_matches_the_numpy_kernel(name):
     df, mass = CONTOURS[name]
     fields = X * mass / (E * TAU)
     c = prepare_contour(*arrays(df))
-    order = np.roll(np.arange(c.s.size)[::-1], 1)
-    both = _kernel.orbit_sums_both(c.s, c.gamma, c.vx, c.vy, fields)
-    forward = _kernel_py.orbit_sums(c.s, c.gamma, c.vx, c.vy, fields)
-    backward = _kernel_py.orbit_sums(c.s[::-1], c.gamma[::-1], c.vx[order], c.vy[order], fields)
+    order = np.roll(np.arange(c.damping.size)[::-1], 1)
+    both = _kernel.orbit_sums_both(c.damping, c.lx, c.ly, fields)
+    forward = _kernel_py.orbit_sums(c.damping, c.lx, c.ly, fields)
+    backward = _kernel_py.orbit_sums(c.damping[::-1], c.lx[order], c.ly[order], fields)
     worst = max(per_field_error(both[0], forward).max(), per_field_error(both[1], backward).max())
     print(f"{name}: max per-field relative difference from NumPy, both orientations: {worst:.1e}")
     assert worst <= 1e-12
-    np.testing.assert_array_equal(both[0], _kernel.orbit_sums(c.s, c.gamma, c.vx, c.vy, fields))
+    np.testing.assert_array_equal(both[0], _kernel.orbit_sums(c.damping, c.lx, c.ly, fields))
 
 
 @pytest.mark.parametrize("symmetrize", [True, False])
@@ -128,7 +109,7 @@ def test_bitwise_identical_for_any_thread_count():
         results = {}
         for count in counts:
             numba.set_num_threads(count)
-            results[count] = _kernel.orbit_sums(c.s, c.gamma, c.vx, c.vy, fields)
+            results[count] = _kernel.orbit_sums(c.damping, c.lx, c.ly, fields)
     finally:
         numba.set_num_threads(original)
     print(f"thread counts compared: {counts}")
@@ -142,17 +123,17 @@ def _fresh_ir():
     kernel = _kernel._orbit_sums_blocks
     options = {k: v for k, v in kernel.targetoptions.items() if k not in ("cache", "nopython")}
     fresh = numba.njit(**options)(kernel.py_func)
-    s = np.full(64, 1e-14)
-    fresh(s, s * 1e27, np.ones(64), np.ones(64), np.array([1.0, 2.0]), 2, True)
+    fresh(np.full(64, 1e-2), np.ones(64), np.ones(64), np.array([1.0, 2.0]), 2, True)
     return "\n".join(fresh.inspect_llvm().values())
 
 
 def test_compiled_without_fastmath():
-    """No reassociation or other fast-math flags anywhere in the compiled kernel (φ included)."""
-    for dispatcher in (_kernel._orbit_sums_blocks, _kernel._segment_weights, _kernel._sweep, _kernel.phi):
+    """No reassociation or other fast-math flags anywhere in the compiled kernel (the
+    moments included)."""
+    for dispatcher in (_kernel._orbit_sums_blocks, _kernel._segment_weights, _kernel._sweep, _kernel.moments):
         assert not dispatcher.targetoptions.get("fastmath", False)
     ir = _fresh_ir()
-    assert "expm1" in ir  # φ is compiled into this IR, so it is covered too
+    assert "expm1" in ir and "exp" in ir  # the moments and the closure are compiled into this IR too
     flags = [flag for flag in (" fast ", " reassoc ", " contract ", " nnan ", " ninf ", " nsz ", " afn ", " arcp ")
              if flag in ir]
     print(f"LLVM IR size {len(ir)} characters; fast-math flags found: {flags}")

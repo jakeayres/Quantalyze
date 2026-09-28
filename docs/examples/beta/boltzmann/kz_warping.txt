@@ -1,2 +1,2 @@
 sigma_zz / sigma_xx at 0 T: 6.06e-04
-MR at 60 T: in-plane 1.31e-04, interlayer 0.394
+MR at 60 T: in-plane 8.07e-05, interlayer 0.393

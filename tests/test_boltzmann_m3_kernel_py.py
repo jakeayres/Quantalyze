@@ -1,16 +1,18 @@
 """M3: the plain-NumPy O(N) kernel.
 
-Checks the exponential-integrator weights φ₁, φ₂ against high-precision values,
-that the kernel converges to the brute-force reference as O(N⁻²), that it stays
-finite over twelve decades of ω_cτ, and that the field branch joins the
-zero-field branch continuously.
+Checks that the kernel converges to the brute-force reference as O(N⁻²) from
+ω_cτ = 10⁻⁴ to 10, in σ and in the derived magnetoresistance and Hall coefficient
+(and to the exact Jones–Zener limit of the magnetoresistance at 10⁻⁵), that it stays
+finite over twelve decades of ω_cτ, and that the field branch joins the zero-field
+branch continuously. (The moments p_k it uses are tested with the damping-coordinate
+kernel, in M10.)
 """
-from decimal import Decimal, getcontext
+import functools
 
 import numpy as np
 import pytest
 
-from quantalyze.beta.boltzmann import _kernel_py as kp
+from quantalyze.beta.boltzmann import _analytic as an
 from quantalyze.beta.boltzmann import _reference as ref
 from quantalyze.beta.boltzmann import generators as gen
 from quantalyze.beta.boltzmann import scattering as sc
@@ -46,61 +48,126 @@ def sigma(df, fields, **kwargs):
     return conductivity_tensor(df["kx"], df["ky"], df["vx"], df["vy"], df["tau"], fields, **kwargs)
 
 
-def exact_phi(z):
-    getcontext().prec = 60
-    x = Decimal(float(z))
-    e = (-x).exp()
-    return float((1 - e) / x), float((1 - (1 + x) * e) / (x * x))
-
-
-# ---------------------------------------------------------------------------
-# φ₁(z) = (1 − e^{−z})/z and φ₂(z) = (1 − (1+z)e^{−z})/z²
-# ---------------------------------------------------------------------------
-
-def test_phi_accuracy_against_high_precision():
-    z = np.concatenate([np.geomspace(1e-14, 1e3, 400), np.geomspace(0.9e-2, 1.1e-2, 50),
-                        np.geomspace(0.9, 1.1, 50)])
-    expected = np.array([exact_phi(v) for v in z])
-    error_1 = np.max(np.abs(kp.phi1(z) / expected[:, 0] - 1))
-    error_2 = np.max(np.abs(kp.phi2(z) / expected[:, 1] - 1))
-    print(f"max relative error over z in [1e-14, 1e3]: phi1 {error_1:.1e}, phi2 {error_2:.1e}")
-    assert error_1 < 1e-14 and error_2 < 1e-14
-
-
-@pytest.mark.parametrize("switch", [1e-2, 1.0])
-def test_phi_continuous_across_branch_switches(switch):
-    below, at = np.nextafter(switch, 0.0), switch
-    for name, f in (("phi1", kp.phi1), ("phi2", kp.phi2)):
-        jump = abs(f(np.array([below]))[0] / f(np.array([at]))[0] - 1)
-        print(f"{name} jump across z = {switch:g}: {jump:.1e}")
-        assert jump <= 1e-14
-
-
-def test_phi_limits_are_finite():
-    z = np.array([0.0, 1e-300, 1e-14, 1e300, np.finfo(float).max])
-    p1, p2 = kp.phi1(z), kp.phi2(z)
-    assert np.all(np.isfinite(p1)) and np.all(np.isfinite(p2))
-    assert p1[0] == 1.0 and p2[0] == 0.5
-    assert p1[3] == pytest.approx(1e-300, rel=1e-15) and p2[3] == 0.0
-
-
 # ---------------------------------------------------------------------------
 # Convergence to the reference
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("x", [0.1, 1.0, 10.0])
+SIZES = np.array([64, 128, 256, 512, 1024])
+FOURFOLD = ref.ParametricContour.polar(k_fermi=fourfold_k, dk_fermi=fourfold_dk, mass=MASS, tau=fourfold_tau,
+                                       carrier="hole")
+
+
+def lopsided_k(p):
+    return 7e9 * (1 + 0.08 * np.cos(3 * p) + 0.05 * np.sin(2 * p + 0.3))
+
+
+def lopsided_dk(p):
+    return 7e9 * (-0.24 * np.sin(3 * p) + 0.10 * np.cos(2 * p + 0.3))
+
+
+def lopsided_tau(p):
+    return sc.hot_spot(p, TAU, strength=3.0, width=0.35, positions=(0.3, 2.0, 4.1))
+
+
+def lopsided(n):
+    """No mirror plane, and hot spots off the axes, so nothing cancels by symmetry."""
+    return gen.polar(n, k_fermi=lopsided_k, dk_fermi=lopsided_dk, mass=ELECTRON_MASS, tau=lopsided_tau)
+
+
+LOPSIDED = ref.ParametricContour.polar(k_fermi=lopsided_k, dk_fermi=lopsided_dk, mass=ELECTRON_MASS,
+                                       tau=lopsided_tau)
+POCKETS = {"fourfold": (fourfold, FOURFOLD, MASS), "lopsided": (lopsided, LOPSIDED, ELECTRON_MASS)}
+
+
+@functools.lru_cache(maxsize=None)
+def reference(pocket, x):
+    """Brute-force σ at B = 0 and at ω_cτ = x (eBτ₀/m), shape (2, 2, 2), and the field."""
+    _, contour, mass = POCKETS[pocket]
+    field = x * mass / (E * TAU)
+    return ref.sigma(contour, [0.0, field], layer_spacing=D), field
+
+
+def magnetoresistance_and_hall(pair, field):
+    """ρ_xx(B)/ρ_xx(0) − 1 and R_H = ½(ρ_yx − ρ_xy)/B from σ at (0, B)."""
+    rho = np.linalg.inv(pair)
+    return rho[1, 0, 0] / rho[0, 0, 0] - 1, 0.5 * (rho[1, 1, 0] - rho[1, 0, 1]) / field
+
+
+def convergence(pocket, x):
+    """Relative errors of σ(B), MR and R_H against the reference for N in SIZES."""
+    exact, field = reference(pocket, x)
+    make = POCKETS[pocket][0]
+    mr_exact, hall_exact = magnetoresistance_and_hall(exact, field)
+    errors = []
+    for n in SIZES:
+        actual = sigma(make(n), [0.0, field])
+        mr, hall = magnetoresistance_and_hall(actual, field)
+        errors.append((np.max(np.abs(actual[1] - exact[1])) / np.max(np.abs(exact[1])),
+                       abs(mr / mr_exact - 1), abs(hall / hall_exact - 1)))
+    return np.array(errors).T, mr_exact  # (3, n_sizes)
+
+
+def slope(errors):
+    return np.polyfit(np.log(SIZES), np.log(errors), 1)[0]
+
+
+@pytest.mark.parametrize("x", [1e-4, 1e-3, 1e-2, 0.1, 1.0, 10.0])
 def test_converges_to_the_reference_as_n_to_the_minus_two(x):
-    """Error against the brute-force reference on the fourfold contour (anisotropic τ),
-    N = 64…1024: the fitted log–log slope must lie in [−2.1, −1.9]."""
-    field = x * MASS / (E * TAU)
-    exact = ref.sigma(ref.ParametricContour.polar(k_fermi=fourfold_k, dk_fermi=fourfold_dk, mass=MASS,
-                                                  tau=fourfold_tau, carrier="hole"), field, layer_spacing=D)[0]
-    sizes = np.array([64, 128, 256, 512, 1024])
-    errors = np.array([np.max(np.abs(sigma(fourfold(n), field)[0] - exact)) / np.max(np.abs(exact))
-                       for n in sizes])
-    slope = np.polyfit(np.log(sizes), np.log(errors), 1)[0]
-    print(f"x = {x}: errors " + ", ".join(f"{e:.2e}" for e in errors) + f"; slope {slope:.3f}")
-    assert -2.1 <= slope <= -1.9
+    """Error of σ against the brute-force reference on the fourfold contour (anisotropic τ),
+    N = 64…1024: the fitted log–log slope must lie in [−2.1, −1.9], from ω_cτ = 10⁻⁴ (where
+    the history decays within a segment) to 10."""
+    (errors, _, _), _ = convergence("fourfold", x)
+    print(f"x = {x}: sigma errors " + ", ".join(f"{e:.2e}" for e in errors) + f"; slope {slope(errors):.3f}")
+    assert -2.1 <= slope(errors) <= -1.9
+
+
+@pytest.mark.parametrize("x", [0.1, 1.0, 10.0])
+def test_magnetoresistance_converges_to_the_reference(x):
+    """MR = ρ_xx(B)/ρ_xx(0) − 1 on the fourfold contour converges with slope in [−2.1, −1.9]."""
+    (_, errors, _), mr = convergence("fourfold", x)
+    print(f"x = {x}: MR = {mr:.4e}; relative errors " + ", ".join(f"{e:.2e}" for e in errors)
+          + f"; slope {slope(errors):.3f}")
+    assert -2.1 <= slope(errors) <= -1.9
+
+
+@pytest.mark.parametrize("x", [1e-3, 1e-2, 0.1, 1.0, 10.0])
+def test_hall_coefficient_converges_to_the_reference(x):
+    """R_H on the fourfold contour converges with slope in [−2.1, −1.9] from ω_cτ = 10⁻³ to 10."""
+    (_, _, errors), _ = convergence("fourfold", x)
+    print(f"x = {x}: R_H relative errors " + ", ".join(f"{e:.2e}" for e in errors) + f"; slope {slope(errors):.3f}")
+    assert -2.1 <= slope(errors) <= -1.9
+
+
+@pytest.mark.parametrize("pocket", ["fourfold", "lopsided"])
+def test_low_field_magnetoresistance_converges_to_the_jones_zener_limit(pocket):
+    """At ω_cτ = 10⁻⁵ the history decays within a segment for every N here (the regime where a
+    trapezoid outer sum gives MR ∝ |B|/N). MR/B² must converge to the exact Jones–Zener
+    coefficient with slope in [−2.1, −1.9]."""
+    make, contour, mass = POCKETS[pocket]
+    zeroth, first, second = an.jones_zener(contour, layer_spacing=D)
+    rho0, _, rho2 = an.low_field_resistivity(zeroth, first, second)
+    coefficient = rho2[0, 0] / rho0[0, 0]  # MR = coefficient · B² + O(B⁴)
+    field = 1e-5 * mass / (E * TAU)
+    errors = []
+    for n in SIZES:
+        rho = np.linalg.inv(sigma(make(n), [0.0, field]))
+        errors.append(abs((rho[1, 0, 0] / rho[0, 0, 0] - 1) / (coefficient * field**2) - 1))
+    print(f"{pocket}: MR/B^2 = {coefficient:.6e} /T^2; relative errors " + ", ".join(f"{e:.2e}" for e in errors)
+          + f"; slope {slope(errors):.3f}")
+    assert -2.1 <= slope(errors) <= -1.9
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("pocket", ["fourfold", "lopsided"])
+@pytest.mark.parametrize("x", [1e-3, 1e-2])
+def test_low_field_magnetoresistance_matches_the_reference(pocket, x):
+    """At N = 1024 the low-field MR agrees with the brute-force reference to 1e-3. (A trapezoid
+    outer sum is off by +120% to +170% at ω_cτ = 10⁻³ here.)"""
+    exact, field = reference(pocket, x)
+    mr_exact, _ = magnetoresistance_and_hall(exact, field)
+    mr, _ = magnetoresistance_and_hall(sigma(POCKETS[pocket][0](1024), [0.0, field]), field)
+    print(f"{pocket}, x = {x}: MR expected {mr_exact:.6e}, actual {mr:.6e}, rel error {abs(mr / mr_exact - 1):.1e}")
+    assert abs(mr / mr_exact - 1) <= 1e-3
 
 
 # ---------------------------------------------------------------------------
@@ -146,8 +213,9 @@ def test_low_field_joins_the_zero_field_branch(df):
 
 
 def test_zero_field_branch_is_the_limit_of_the_recursion():
-    """σ(0) is the same discrete sum the recursion tends to as B → 0, so σ(B) − σ(0)
-    is pure physics (O(B) off-diagonal, O(B²) diagonal), with no discretisation jump."""
+    """σ(0) is the same discrete sum the recursion tends to as B → 0, so there is no
+    discretisation jump between the branches. (That σ(B) − σ(0) then grows as B² on the
+    diagonal, not as |B|, is checked by the curvature test in M10.)"""
     df = fourfold(256)
     zero = sigma(df, 0.0, symmetrize=False)[0]
     tiny = sigma(df, 1e-9, symmetrize=False)[0]

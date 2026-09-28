@@ -1,16 +1,18 @@
 """Analytic results that the Boltzmann tests compare against (private; tests only).
 
-Everything here is derived from the Drude equation of motion
+The Drude and two-band results are derived from the Drude equation of motion
 m_i dv_i/dt = q(E + v × B)_i − m_i v_i/τ with B = B ẑ, which is independent of
-the Chambers tube integral used by quantalyze.beta.boltzmann. SI units throughout.
-Tensors have shape (nB, 2, 2) with index order [[xx, xy], [yx, yy]].
+the Chambers tube integral used by quantalyze.beta.boltzmann. The low- and high-field
+expansions of the Chambers σ for an arbitrary smooth pocket are evaluated spectrally
+on a parametrised contour, sharing no code with the kernels. SI units throughout.
+Tensors have index order [[xx, xy], [yx, yy]].
 """
 from __future__ import annotations
 
 import numpy as np
 from scipy.integrate import quad
 
-from ...core.constants import ELEMENTARY_CHARGE
+from ...core.constants import ELEMENTARY_CHARGE, HBAR
 
 E = ELEMENTARY_CHARGE
 
@@ -106,6 +108,130 @@ def angular_average(f):
     """⟨f⟩ = (1/2π) ∫₀^{2π} f(φ) dφ by adaptive quadrature."""
     value, _ = quad(f, 0.0, 2 * np.pi, epsabs=0.0, epsrel=1e-13, limit=500)
     return value / (2 * np.pi)
+
+
+# ---------------------------------------------------------------------------
+# Low- and high-field expansions of the Chambers σ for any smooth closed pocket
+#
+# In the damping coordinate g = ∫ds/τ (T), with the mean free path ℓ = vτ (m), the
+# history obeys B·Dw = ℓ − w, where D = d/dg along the carriers' motion and B > 0, and
+# σ_ij = (g_s e³/4π²ħ²d) ∮ ℓ_i w_j dg. Expanding w = (1 + BD)⁻¹ℓ in powers of B gives the
+# Jones–Zener series; expanding in 1/B gives the high-field series. Both are evaluated
+# spectrally on the parametrised contour, independently of the kernels.
+# ---------------------------------------------------------------------------
+
+def _wavenumbers(m):
+    k = np.fft.fftfreq(m, d=1.0 / m)  # integers 0, 1, ..., −1
+    if m % 2 == 0:
+        k[m // 2] = 0.0  # the Nyquist mode has no well-defined derivative
+    return k
+
+
+def _periodic_derivative(values):
+    """d/dφ of smooth 2π-periodic samples at φ_j = 2πj/M (last axis)."""
+    k = _wavenumbers(values.shape[-1])
+    return np.fft.ifft(1j * k * np.fft.fft(values, axis=-1), axis=-1).real
+
+
+def _periodic_antiderivative(values):
+    """The zero-mean antiderivative in φ of smooth periodic samples whose mean is zero."""
+    k = _wavenumbers(values.shape[-1])
+    inverse = np.zeros(k.shape, dtype=complex)
+    inverse[k != 0] = 1 / (1j * k[k != 0])
+    return np.fft.ifft(inverse * np.fft.fft(values, axis=-1), axis=-1).real
+
+
+def _orbit_on_grid(contour, points, charge):
+    """dg/dφ (T), ℓ (m, shape (d, M)) and the direction of motion (+1 along +φ) for B > 0."""
+    phi = 2 * np.pi * np.arange(points) / points
+    kx, ky = contour.k(phi)
+    if contour.dk is not None:
+        dkx, dky = (np.broadcast_to(a, phi.shape) for a in contour.dk(phi))
+    else:
+        dkx, dky = _periodic_derivative(np.stack([kx, ky]))
+    vx, vy = (np.broadcast_to(a, phi.shape).astype(float) for a in contour.v(phi))
+    tau = np.broadcast_to(contour.tau(phi), phi.shape).astype(float)
+    components = [vx, vy] if contour.vz is None else [vx, vy, np.broadcast_to(contour.vz(phi), phi.shape)]
+    ell = np.stack(components) * tau  # (d, M)
+    g_prime = HBAR * np.hypot(dkx, dky) / (E * np.hypot(vx, vy) * tau)  # (M,)
+    # ħ dk/dt = q v × B: for B = +B ẑ the motion is along q (v_y, −v_x).
+    along = np.sign(charge) * (dkx * vy - dky * vx)
+    if not (np.all(along > 0) or np.all(along < 0)):
+        raise ValueError("v must be normal to the contour and point to the same side all the way round")
+    return g_prime, ell, (1.0 if along[0] > 0 else -1.0)
+
+
+def _prefactor(layer_spacing, spin_degeneracy):
+    return spin_degeneracy * E**3 / (4 * np.pi**2 * HBAR**2 * layer_spacing)
+
+
+def jones_zener(contour, *, layer_spacing, charge=-E, spin_degeneracy=2, points=8192):
+    """Low-field expansion σ(B) = σ⁽⁰⁾ + Bσ⁽¹⁾ + B²σ⁽²⁾ + O(B³) for B along +ẑ (S/m, S/m/T, S/m/T²).
+
+    With D = d/dg along the motion, w = ℓ − BDℓ + B²D²ℓ − …, so
+    σ⁽⁰⁾ = ∮ℓ_iℓ_j dg, σ⁽¹⁾ = −∮ℓ_i Dℓ_j dg (antisymmetric: Ong's ℓ-area) and
+    σ⁽²⁾ = ∮ℓ_i D²ℓ_j dg = −∮Dℓ_i Dℓ_j dg, each times g_s e³/(4π²ħ²d). Spectrally accurate
+    for smooth pockets resolved by `points`.
+
+    Args:
+        contour: A closed `ParametricContour` (from the reference module).
+        layer_spacing: Interlayer spacing d (m).
+        charge: Carrier charge q (C).
+        spin_degeneracy: Spin degeneracy g_s.
+        points: Number of equally spaced parameter values.
+
+    Returns:
+        (σ⁽⁰⁾, σ⁽¹⁾, σ⁽²⁾), each of shape (d, d).
+    """
+    g_prime, ell, direction = _orbit_on_grid(contour, points, charge)
+    dell = _periodic_derivative(ell)  # dℓ/dφ, (d, M)
+    step = 2 * np.pi / points
+    zeroth = np.einsum("m,im,jm->ij", g_prime * step, ell, ell)
+    first = -direction * np.einsum("m,im,jm->ij", np.full(points, step), ell, dell)
+    second = -np.einsum("m,im,jm->ij", step / g_prime, dell, dell)
+    prefactor = _prefactor(layer_spacing, spin_degeneracy)
+    return prefactor * zeroth, prefactor * first, prefactor * second
+
+
+def low_field_resistivity(zeroth, first, second):
+    """ρ(B) = ρ⁽⁰⁾ + Bρ⁽¹⁾ + B²ρ⁽²⁾ + O(B³) from the σ expansion (Ω·m, Ω·m/T, Ω·m/T²).
+
+    R_H(0) = ½(ρ⁽¹⁾_yx − ρ⁽¹⁾_xy), and the magnetoresistance is ρ⁽²⁾_ii/ρ⁽⁰⁾_ii · B² + O(B⁴).
+    """
+    r0 = np.linalg.inv(zeroth)
+    return r0, -r0 @ first @ r0, r0 @ first @ r0 @ first @ r0 - r0 @ second @ r0
+
+
+def high_field(contour, *, layer_spacing, charge=-E, spin_degeneracy=2, points=8192):
+    """High-field expansion σ(B) = H⁽¹⁾/B + H⁽²⁾/B² + O(1/B³) of a closed pocket, B along +ẑ.
+
+    With R = D⁻¹ℓ, the real-space orbit scaled by B (zero mean over g),
+    w = R/B − D⁻¹R/B² + …, so H⁽¹⁾ = ∮ℓ_i R_j dg (antisymmetric) and H⁽²⁾ = ∮R_iR_j dg,
+    each times g_s e³/(4π²ħ²d). ∮ℓ dg = 0 on a closed orbit, which makes R periodic.
+
+    Returns:
+        (H⁽¹⁾, H⁽²⁾) in S·T/m and S·T²/m, each of shape (d, d).
+    """
+    g_prime, ell, direction = _orbit_on_grid(contour, points, charge)
+    flux = ell * g_prime  # dR/dφ up to the direction, (d, M)
+    flux = flux - flux.mean(axis=1, keepdims=True)  # zero analytically; removes rounding
+    orbit = direction * _periodic_antiderivative(flux)
+    orbit -= np.sum(orbit * g_prime, axis=1, keepdims=True) / np.sum(g_prime)
+    step = 2 * np.pi / points
+    first = np.einsum("m,im,jm->ij", g_prime * step, ell, orbit)
+    second = np.einsum("m,im,jm->ij", g_prime * step, orbit, orbit)
+    prefactor = _prefactor(layer_spacing, spin_degeneracy)
+    return prefactor * first, prefactor * second
+
+
+def high_field_resistivity(first, second):
+    """ρ(B) = B·H⁽¹⁾⁻¹ + ρ(∞) + O(1/B) with ρ(∞) = −H⁽¹⁾⁻¹H⁽²⁾H⁽¹⁾⁻¹ (2×2 only).
+
+    Returns:
+        (H⁽¹⁾⁻¹, ρ(∞)): the Hall slope (R_H(∞) = ½(H⁽¹⁾⁻¹_yx − H⁽¹⁾⁻¹_xy)) and the saturated ρ.
+    """
+    inverse = np.linalg.inv(first)
+    return inverse, -inverse @ second @ inverse
 
 def spectral_area(kx, ky):
     """Area enclosed by a smoothly, evenly parametrised closed contour (m⁻²). Tests only.

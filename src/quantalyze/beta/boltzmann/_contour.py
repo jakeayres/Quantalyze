@@ -2,8 +2,9 @@
 
 `prepare_contour` is the one place the input contract is enforced. It takes
 nodes k_n with group velocities v_n = ∇ε/ħ and relaxation times τ_n, and returns
-them ordered along the carriers' motion, with the per-segment geometric time
-s_n and scattering rate γ_n that the kernels integrate over.
+them ordered along the carriers' motion, with what the kernels integrate over: the
+mean free path ℓ_n = v_n τ_n at each node and the damping Δg_n = ∫ds/τ of each
+segment (the kernels work in the damping coordinate g).
 
 Conventions: SI units, B = +B ẑ, and ħ dk/dt = q v × B, so a carrier moves
 along dk ∝ q (v_y, −v_x). Segment n joins node n to node n+1 (indices mod N).
@@ -39,20 +40,25 @@ class PreparedContour:
     Attributes:
         kx: Node wavevectors k_x (m⁻¹), in the order the carriers move. Shape (N,).
         ky: Node wavevectors k_y (m⁻¹). Shape (N,).
-        vx: Group velocities v_x with the drift removed (m/s). Shape (N,).
-        vy: Group velocities v_y with the drift removed (m/s). Shape (N,).
+        vx: Group velocities v_x (m/s), as given. Shape (N,).
+        vy: Group velocities v_y (m/s), as given. Shape (N,).
         tau: Relaxation times τ (s). Shape (N,).
-        s: Geometric time of segment n → n+1, ħ|Δk_n|/(2e) · (1/|v_n| + 1/|v_{n+1}|),
-            using the original velocities (s·T). The real time is s_n/|B|. Shape (N,).
-        gamma: Mean scattering rate on segment n, ½(1/τ_n + 1/τ_{n+1}) (s⁻¹). Shape (N,).
-        drift: The velocity v̄ subtracted from every node (m/s); zero if drift
+        s: Geometric time of segment n → n+1, ħ|Δk_n|/(2e) · (1/|v_n| + 1/|v_{n+1}|)
+            (s·T). The real time is s_n/|B|, and Σ s_n = 2πm_c/e. Shape (N,).
+        damping: Damping of segment n, Δg_n ≈ ∫ds/τ, taken as 2s_n/(τ_n + τ_{n+1}) (T). At
+            field B the history decays by e^{−Δg_n/|B|} across the segment. Shape (N,).
+        lx: Mean free paths ℓ_x = v_x τ with the drift removed (m). Shape (N,).
+        ly: Mean free paths ℓ_y = v_y τ with the drift removed (m). Shape (N,).
+        drift: The mean free path ℓ̄ subtracted from every node (m); zero if drift
             removal was off. Shape (2,).
         charge: Carrier charge q (C).
         period: For an open orbit, the reciprocal-lattice vector that takes the last
             node's segment on to the first node, k_N = k_0 + G, in the prepared order
             (m⁻¹); zero for a closed contour. Shape (2,).
-        vz: Velocities v_z (m/s) for a k_z slice of a warped surface, in the same order,
-            never drift-corrected (∮ v_z dt is physical); None for a 2D contour. Shape (N,).
+        vz: Velocities v_z (m/s) for a k_z slice of a warped surface, in the same order;
+            None for a 2D contour. Shape (N,).
+        lz: Mean free paths ℓ_z = v_z τ (m), never drift-corrected (∮ v_z dt is
+            physical); None for a 2D contour. Shape (N,).
     """
 
     kx: np.ndarray
@@ -61,11 +67,14 @@ class PreparedContour:
     vy: np.ndarray
     tau: np.ndarray
     s: np.ndarray
-    gamma: np.ndarray
+    damping: np.ndarray
+    lx: np.ndarray
+    ly: np.ndarray
     drift: np.ndarray
     charge: float
     period: np.ndarray
     vz: Optional[np.ndarray] = None
+    lz: Optional[np.ndarray] = None
 
 
 def _as_1d(name: str, values) -> np.ndarray:
@@ -106,12 +115,13 @@ def prepare_contour(
     from the last node to the first node shifted by the reciprocal-lattice vector G.
     Either sign of G is accepted; the one that joins the last node to the first is used.
 
-    With drift removal on, the velocity v̄ = Σ ½ s_n (v_n + v_{n+1}) / Σ s_n is
-    subtracted from every node. On a closed orbit ∮ v dt = 0 exactly, so v̄ is pure
-    discretisation error; removing it with the same trapezoid weights the kernels use
-    makes the discrete ∮ v dt vanish, which stops σ_xx from levelling off at high
-    field instead of falling as 1/B². On an open orbit the drift is physical (it is
-    why open-orbit magnetoresistance does not saturate), so it is never removed.
+    The kernels take ℓ linear in g = ∫ds/τ along each segment, so the orbit's drift is
+    ∮ v dt = ∮ ℓ dg/|B|. With drift removal on, the mean free path
+    ℓ̄ = Σ ½ Δg_n (ℓ_n + ℓ_{n+1}) / Σ Δg_n is subtracted from every node. On a closed
+    orbit ∮ v dt = 0 exactly, so ℓ̄ is pure discretisation error, and removing it makes
+    the discrete drift vanish, which stops σ_xx from levelling off at high field
+    instead of falling as 1/B². On an open orbit the drift is physical (it is why
+    open-orbit magnetoresistance does not saturate), so it is never removed.
 
     Args:
         kx: Node wavevectors k_x (m⁻¹), array-like of shape (N,).
@@ -121,15 +131,16 @@ def prepare_contour(
         tau: Relaxation times (s), shape (N,) or a single float; finite and positive.
         charge: Carrier charge q (C), ±e. The default −e is for band electrons; a
             hole-like pocket is described by its inward-pointing velocities, not by q.
-        remove_drift: Subtract the discretisation drift v̄ from the velocities. The
-            default (None) removes it from closed contours and never from open orbits.
+        remove_drift: Subtract the discretisation drift ℓ̄ from the mean free paths.
+            The default (None) removes it from closed contours and never from open orbits.
         period: Reciprocal-lattice vector (G_x, G_y) (m⁻¹) of an open orbit, or None for
             a closed contour.
         vz: Velocities v_z (m/s), shape (N,), for one k_z slice of a warped surface. With
             B along ẑ the orbit stays in its k_z plane, so v_z only rides along with it.
 
     Returns:
-        PreparedContour with the ordered nodes, velocities, s_n, γ_n, drift and period.
+        PreparedContour with the ordered nodes, velocities, mean free paths, s_n, Δg_n,
+        drift and period.
 
     Raises:
         ValueError: If the arrays are not 1-D or differ in length; if any value is
@@ -276,14 +287,20 @@ def prepare_contour(
         )
 
     s = HBAR * length / (2 * ELEMENTARY_CHARGE) * (1 / speed + 1 / np.roll(speed, -1))  # (N,), s·T
-    gamma = 0.5 * (1 / tau + 1 / np.roll(tau, -1))  # (N,), 1/s
+    # ∫ds/τ over the segment, with the rate 1/τ̄ of its mean τ. This keeps the orbit a
+    # carrier traces, ∫ℓ dg = ½Δg(ℓ_n + ℓ_{n+1}) = s_n(τ_n v_n + τ_{n+1} v_{n+1})/(τ_n + τ_{n+1}),
+    # within a (τ_n − τ_{n+1})(v_n − v_{n+1}) term of ½s_n(v_n + v_{n+1}), which does not
+    # depend on τ at all (as the true ∫v ds does not), so the high-field limit stays
+    # accurate where τ varies quickly.
+    damping = 2 * s / (tau + np.roll(tau, -1))  # (N,), T
 
+    lx, ly = vx * tau, vy * tau  # (N,), m
     drift = np.zeros(2)
     if remove_drift:
-        drift[0] = np.sum(0.5 * s * (vx + np.roll(vx, -1))) / np.sum(s)
-        drift[1] = np.sum(0.5 * s * (vy + np.roll(vy, -1))) / np.sum(s)
-        vx = vx - drift[0]
-        vy = vy - drift[1]
+        drift[0] = np.sum(0.5 * damping * (lx + np.roll(lx, -1))) / np.sum(damping)
+        drift[1] = np.sum(0.5 * damping * (ly + np.roll(ly, -1))) / np.sum(damping)
+        lx = lx - drift[0]
+        ly = ly - drift[1]
 
     return PreparedContour(
         kx=_frozen(kx),
@@ -292,11 +309,14 @@ def prepare_contour(
         vy=_frozen(vy),
         tau=_frozen(tau),
         s=_frozen(s),
-        gamma=_frozen(gamma),
+        damping=_frozen(damping),
+        lx=_frozen(lx),
+        ly=_frozen(ly),
         drift=_frozen(drift),
         charge=charge,
         period=_frozen(np.zeros(2) if wrap is None else wrap),
         vz=None if vz is None else _frozen(vz),
+        lz=None if vz is None else _frozen(vz * tau),
     )
 
 
