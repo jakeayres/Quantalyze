@@ -130,6 +130,10 @@ extrapolated on its own). `conductivity_tensor` takes the same option.
       the low-field MR is right even with few points and only its size carries the
       O(N⁻²) error. To check a result, rerun it with twice the points, or use
       [`extrapolate=True`](#extrapolate).
+    - **Resolve narrow hot spots.** If τ changes by more than about 1.5× between
+      neighbouring points, the solver warns: a hot spot only a point or two wide is
+      under-resolved, and the magnetoresistance can be off by several per cent (by a
+      quarter when the hot spot is narrower than the point spacing). Add points there.
     - **`extrapolate` needs smoothly sampled points,** an even number of them and at
       least 32. It assumes the error is c/N² with the same c on every other point, which
       holds when the points follow a smooth contour at smoothly varying spacing (the

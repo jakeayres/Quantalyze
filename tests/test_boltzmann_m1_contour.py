@@ -188,13 +188,30 @@ def test_warns_when_velocity_is_not_normal_to_the_contour():
 
 
 @pytest.mark.parametrize("df", [
-    circle(16), circle(16, carrier="hole"), lopsided(16), fourfold(16), tight_binding_m(16),
+    circle(16), circle(16, carrier="hole"), lopsided(16).assign(tau=TAU), fourfold(16).assign(tau=TAU),
+    tight_binding_m(16).assign(tau=TAU),
     gen.ellipse(16, k_fermi=K_F, mass_x=ELECTRON_MASS, mass_y=4 * ELECTRON_MASS, tau=TAU, rotation=0.4),
-], ids=["circle", "circle-hole", "lopsided", "fourfold", "tight-binding", "ellipse"])
+    lopsided(128), fourfold(128), tight_binding_m(128),
+], ids=["circle", "circle-hole", "lopsided", "fourfold", "tight-binding", "ellipse",
+        "lopsided-tau", "fourfold-tau", "tight-binding-tau"])
 def test_valid_contours_do_not_warn(df):
+    """Coarse shapes (16 nodes, constant τ) and resolved anisotropic τ (128 nodes)."""
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         prepare_contour(*arrays(df))
+
+
+def test_warns_when_tau_changes_too_fast_between_nodes():
+    """A hot spot narrower than about two node spacings (τ changing by more than ~1.5× between
+    neighbours) warns: at N = 256 a 0.02-rad hot spot puts the MR off by ~25%. Resolved, it is
+    silent."""
+    narrow = circle(256, tau=lambda p: sc.hot_spot(p, TAU, strength=9.0, width=0.02))
+    with pytest.warns(UserWarning, match="under-resolved"):
+        prepare_contour(*arrays(narrow))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        prepare_contour(*arrays(circle(256, tau=lambda p: sc.hot_spot(p, TAU, strength=9.0, width=0.2))))
+        prepare_contour(*arrays(circle(4096, tau=lambda p: sc.hot_spot(p, TAU, strength=9.0, width=0.02))))
 
 
 # ---------------------------------------------------------------------------

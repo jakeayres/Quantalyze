@@ -270,7 +270,7 @@ def test_two_pockets_through_the_dataframe_api():
 # ---------------------------------------------------------------------------
 
 def test_needs_an_even_number_of_nodes_at_least_32():
-    make = POCKETS["lopsided"][0]
+    make = lambda n: POCKETS["lopsided"][0](n).assign(tau=TAU)  # noqa: E731  (so that so few nodes resolve τ)
     for n in (63, 30):
         with pytest.raises(ValueError, match="even number of distinct nodes, at least 32"):
             sigma(make(n), 1.0, extrapolate=True)

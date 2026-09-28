@@ -29,6 +29,10 @@ _OPEN_GAP = 5.0
 # Warn when a segment is further than this from perpendicular to the mean velocity
 # direction at its ends (|cos| of the angle between them; 0.1 is about 5.7°).
 _NORMAL_TOLERANCE = 0.1
+# Warn when τ changes by more than this factor, as |Δ ln τ|, between neighbouring nodes
+# (about 1.5×). A hot spot that narrow is under-resolved: at N = 256 a jump of 0.35 costs
+# about 2% in the magnetoresistance, 0.7 about 7% and 1.3 about 25%.
+_TAU_JUMP = 0.4
 
 
 @dataclass(frozen=True)
@@ -167,7 +171,9 @@ def prepare_contour(
     Warns:
         UserWarning: If the velocities are not normal to the contour: a sign of
             unit-vector velocities, swapped components or mixed units, or of a contour
-            sampled too coarsely where it curves sharply.
+            sampled too coarsely where it curves sharply. Also if τ changes by more than
+            about 1.5× between neighbouring nodes, which leaves a narrow hot spot
+            under-resolved.
 
     Examples:
         >>> from quantalyze.beta import boltzmann as bz
@@ -234,6 +240,18 @@ def prepare_contour(
                 f"a contour needs at least {MIN_NODES} distinct nodes, not {kx.size} "
                 "(the last point repeats the first)"
             )
+
+    jump = np.abs(np.log(_following(tau) / tau))  # |Δ ln τ| on each segment, (N,)
+    steepest = int(np.argmax(jump))
+    if jump[steepest] > _TAU_JUMP:
+        warnings.warn(
+            f"tau changes by a factor of {np.exp(jump[steepest]):.2f} between neighbouring nodes {steepest} and "
+            f"{(steepest + 1) % kx.size}: scattering that varies this fast from node to node (a hot spot only a "
+            "node or two wide) is under-resolved, and sigma, the magnetoresistance especially, can be off by "
+            "several per cent. Use more nodes where tau varies, and check the result against twice as many",
+            UserWarning,
+            stacklevel=2,
+        )
 
     dkx = _following(kx) - kx  # segment n: node n → n+1, (N,)
     dky = _following(ky) - ky
