@@ -94,6 +94,27 @@ whose velocities point inwards; keep `charge` at its default, −e.
 Equal numbers of electrons and holes give magnetoresistance that grows as B² without
 saturating (doubling B quadruples it), while R_H stays constant.
 
+### Extrapolating in N { #extrapolate }
+
+**`extrapolate=True` cancels the N⁻² error.** The solver also computes σ on every other
+point and returns (4σ_N − σ_{N/2})/3 (Richardson extrapolation), so the error falls as
+N⁻⁴ instead, at 1.5 times the cost.
+
+```python
+--8<-- "beta/boltzmann/extrapolate.py:example"
+```
+
+```text title="Output"
+--8<-- "beta/boltzmann/extrapolate.txt"
+```
+
+![Error of sigma_xx falling as N to the minus 2 as computed and as N to the minus 4 extrapolated](../examples/beta/boltzmann/extrapolate.png#only-light)
+![Error of sigma_xx falling as N to the minus 2 as computed and as N to the minus 4 extrapolated](../examples/beta/boltzmann/extrapolate-dark.png#only-dark)
+
+At 512 points the error of σ_xx drops from 4 × 10⁻⁵ to 3 × 10⁻⁹. The same holds for R_H,
+for σ at any field, and for open orbits and k_z-warped surfaces (each slice is
+extrapolated on its own). `conductivity_tensor` takes the same option.
+
 !!! warning "Watch out"
 
     - **`layer_spacing` is the distance between conducting layers, not always c.** In a
@@ -107,7 +128,15 @@ saturating (doubling B quadruples it), while R_H stays constant.
       between neighbouring points. The discretisation adds no magnetoresistance of its
       own: at low field σ(B) − σ(0) grows as B², as it physically must, so the shape of
       the low-field MR is right even with few points and only its size carries the
-      O(N⁻²) error. To check a result, rerun it with twice the points.
+      O(N⁻²) error. To check a result, rerun it with twice the points, or use
+      [`extrapolate=True`](#extrapolate).
+    - **`extrapolate` needs smoothly sampled points,** an even number of them and at
+      least 32. It assumes the error is c/N² with the same c on every other point, which
+      holds when the points follow a smooth contour at smoothly varying spacing (the
+      generators, a band-structure calculation). On noisy or irregular points, such as
+      a measured ARPES contour, it can make things worse, so compare with and without.
+      It improves the magnetoresistance only a few-fold below ω_cτ ≈ 2π/N, where a
+      small error of order |B|/N remains.
     - **Contours must be closed, unless you pass `period`** (see [open orbits](#open-orbits)).
       Don't repeat the first point at the end; it is dropped if you do.
     - **Onsager's relation σ(−B) = σ(B)ᵀ holds by construction.** With

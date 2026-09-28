@@ -8,6 +8,9 @@ kernels solve a continuous model exactly, so σ(−B) = σ(B)ᵀ holds to roundi
 both orientations are computed, a disagreement beyond rounding is reported as a
 warning (it would mean a bug).
 
+With `extrapolate`, it also computes σ on every other node and returns the Richardson
+extrapolation (4σ_N − σ_{N/2})/3, which cancels the O(N⁻²) discretisation error.
+
 `conductivity` is the DataFrame layer on top. It sums σ over pockets, and
 `resistivity`, `hall_coefficient` and `magnetoresistance` derive from its output.
 """
@@ -21,7 +24,7 @@ import pandas as pd
 
 from ...core.constants import ELEMENTARY_CHARGE, HBAR
 from . import _kernel, _kernel_py
-from ._contour import enclosed_area, prepare_contour
+from ._contour import MIN_NODES, PreparedContour, enclosed_area, prepare_contour
 
 _BACKENDS = ("python", "numba")
 # σ(−B) and σ(B)ᵀ agree to ~1e-15 of max|σ| (rounding); a larger difference is a bug.
@@ -80,6 +83,7 @@ def conductivity_tensor(
     period: Optional[Sequence[float]] = None,
     vz=None,
     backend: str = "numba",
+    extrapolate: bool = False,
 ) -> np.ndarray:
     """Conductivity tensor of one Fermi contour at each field (S/m).
 
@@ -105,10 +109,18 @@ def conductivity_tensor(
             (σ of a warped surface is the average over its slices).
         backend: "numba" (compiled, parallel over fields) or "python" (plain NumPy, the
             slower reference implementation the numba kernel is tested against).
+        extrapolate: Return the Richardson extrapolation (4σ_N − σ_{N/2})/3, with σ_{N/2}
+            computed on every other node. The O(N⁻²) discretisation error cancels, leaving
+            O(N⁻⁴) when the nodes sample a smooth contour smoothly (evenly in angle or arc
+            length, say). Costs 1.5×. Needs an even number of nodes, at least 32.
 
     Returns:
         ndarray of shape (nB, 2, 2), or (nB, 3, 3) with `vz`: σ with index order
         [[xx, xy, …], [yx, yy, …], …] (S/m).
+
+    Raises:
+        ValueError: If the contour is invalid (see the input contract of `conductivity`),
+            or `extrapolate` is set and the number of distinct nodes is odd or below 32.
 
     Warns:
         RuntimeWarning: If σ(−B) and σ(B)ᵀ, computed on the two orientations of the orbit,
@@ -131,6 +143,41 @@ def conductivity_tensor(
     if not np.all(np.isfinite(fields)):
         raise ValueError("field must be finite")
 
+    result = _orbit_tensor(contour, fields, symmetrize, backend)  # (nB, d, d)
+    if extrapolate:
+        # The discretisation error is c/N² + O(N⁻⁴) with the same c on every other node
+        # (a smooth sampling stays smooth at double the spacing), so this cancels c/N².
+        half = _half_resolution(contour.kx.size, kx, ky, vx, vy, tau, vz,
+                                charge=charge, remove_drift=remove_drift, period=period)
+        result = (4.0 * result - _orbit_tensor(half, fields, symmetrize, backend)) / 3.0
+
+    prefactor = spin_degeneracy * ELEMENTARY_CHARGE**3 / (4 * np.pi**2 * HBAR**2 * layer_spacing)
+    return prefactor * result
+
+
+def _half_resolution(n_nodes: int, kx, ky, vx, vy, tau, vz, **options) -> PreparedContour:
+    """Every other node of the input (node 0 kept), prepared. `n_nodes` is the number of
+    distinct nodes, so a final node repeating the first is left out."""
+    if n_nodes % 2 or n_nodes // 2 < MIN_NODES:
+        raise ValueError(f"extrapolate needs an even number of distinct nodes, at least {2 * MIN_NODES}, "
+                         f"so that every other node is again a contour; this one has {n_nodes}")
+    every_other = slice(0, n_nodes, 2)
+    tau = np.asarray(tau, dtype=np.float64)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        half = prepare_contour(
+            *(np.asarray(a, dtype=np.float64)[every_other] for a in (kx, ky, vx, vy)),
+            tau if tau.ndim == 0 else tau[every_other],
+            vz=None if vz is None else np.asarray(vz, dtype=np.float64)[every_other], **options,
+        )
+    for warning in caught:  # e.g. every other node is too coarse where the contour curves sharply
+        warnings.warn(f"extrapolate: on every other node ({n_nodes // 2} nodes), {warning.message}",
+                      warning.category, stacklevel=3)
+    return half
+
+
+def _orbit_tensor(contour: PreparedContour, fields, symmetrize, backend) -> np.ndarray:
+    """σ at each field without the prefactor g_s e³ / (4π²ħ² d), shape (nB, d, d)."""
     # The prepared order is the motion for B > 0; B < 0 runs the orbit backwards.
     paths = (contour.lx, contour.ly) if contour.lz is None else (contour.lx, contour.ly, contour.lz)
     dim = len(paths)
@@ -157,9 +204,7 @@ def conductivity_tensor(
         result = 0.5 * (along + np.transpose(against, (0, 2, 1)))
     else:
         result = along
-
-    prefactor = spin_degeneracy * ELEMENTARY_CHARGE**3 / (4 * np.pi**2 * HBAR**2 * layer_spacing)
-    return prefactor * result
+    return result
 
 
 def _check_onsager(along, against, magnitude):
@@ -175,7 +220,7 @@ def _check_onsager(along, against, magnitude):
             f"|B| = {magnitude[worst]:.6g} T. The solver satisfies this to rounding, so this is a bug; "
             "please report it with the contour that triggers it",
             RuntimeWarning,
-            stacklevel=3,
+            stacklevel=4,
         )
 
 
@@ -231,6 +276,7 @@ def conductivity(
     remove_drift: Optional[bool] = None,
     period=None,
     backend: str = "numba",
+    extrapolate: bool = False,
 ) -> pd.DataFrame:
     """Magnetoconductivity tensor of one or more Fermi pockets (S/m).
 
@@ -273,6 +319,12 @@ def conductivity(
             takes the last node of a contour on to its first: one pair for every
             contour, or a list aligned with `dfs` (None for closed pockets).
         backend: "numba" (compiled, parallel over fields) or "python" (plain NumPy).
+        extrapolate: Richardson-extrapolate each contour in its number of nodes: return
+            (4σ_N − σ_{N/2})/3, with σ_{N/2} computed on every other node. This cancels the
+            O(N⁻²) discretisation error, leaving O(N⁻⁴) when the nodes sample a smooth
+            contour smoothly (as the generators do). Costs 1.5×. Every contour (every k_z
+            slice) needs an even number of nodes, at least 32. Not for noisy or irregular
+            nodes (measured contours), whose error does not fall as N⁻².
 
     Returns:
         DataFrame with columns field (T) and sigma_xx, sigma_xy, sigma_yx, sigma_yy (S/m);
@@ -295,7 +347,7 @@ def conductivity(
     periods = _periods(period, len(frames))
     dim = 2 if kz is None else 3
     options = dict(layer_spacing=layer_spacing, charge=charge, spin_degeneracy=spin_degeneracy,
-                   symmetrize=symmetrize, remove_drift=remove_drift, backend=backend)
+                   symmetrize=symmetrize, remove_drift=remove_drift, backend=backend, extrapolate=extrapolate)
     total = np.zeros((fields.size, dim, dim))
     for frame, frame_period in zip(frames, periods):
         slices = [frame] if kz is None else _kz_slices(frame, kz, layer_spacing)

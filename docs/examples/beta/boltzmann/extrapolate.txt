@@ -1,0 +1,5 @@
+N =  32: error 9.6e-03 as computed, 1.7e-04 extrapolated
+N =  64: error 2.4e-03 as computed, 1.0e-05 extrapolated
+N = 128: error 6.0e-04 as computed, 6.6e-07 extrapolated
+N = 256: error 1.5e-04 as computed, 4.1e-08 extrapolated
+N = 512: error 3.8e-05 as computed, 2.6e-09 extrapolated

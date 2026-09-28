@@ -52,9 +52,10 @@ class PreparedContour:
         drift: The mean free path ℓ̄ subtracted from every node (m); zero if drift
             removal was off. Shape (2,).
         charge: Carrier charge q (C).
-        period: For an open orbit, the reciprocal-lattice vector that takes the last
-            node's segment on to the first node, k_N = k_0 + G, in the prepared order
-            (m⁻¹); zero for a closed contour. Shape (2,).
+        period: For an open orbit, the reciprocal-lattice vector G by which k advances over
+            one period in the prepared order of motion (m⁻¹); zero for a closed contour. (When
+            the input ran against the motion, the segment that crosses the period boundary
+            is the first in the prepared order, not the last.) Shape (2,).
         vz: Velocities v_z (m/s) for a k_z slice of a warped surface, in the same order;
             None for a 2D contour. Shape (N,).
         lz: Mean free paths ℓ_z = v_z τ (m), never drift-corrected (∮ v_z dt is
