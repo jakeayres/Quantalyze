@@ -12,6 +12,10 @@ scaling (doubling N or nB multiplies the time by 1.6–2.5).
 
 `--check` exits with status 1 if any case is more than 25% slower than the baseline.
 Timings depend on the machine, so keep the baseline from the machine you compare on.
+
+It also times `conductivity` with a scattering kernel (a dense solve per field on the
+nodes the kernel couples), on a pair of warped open sheets. Those timings are reported,
+not gated.
 """
 from __future__ import annotations
 
@@ -28,7 +32,7 @@ import numba
 import numpy as np
 
 from quantalyze.beta.boltzmann import generators, scattering
-from quantalyze.beta.boltzmann._response import conductivity_tensor
+from quantalyze.beta.boltzmann._response import conductivity, conductivity_tensor
 from quantalyze.core.constants import ELECTRON_MASS
 
 HERE = Path(__file__).resolve().parent
@@ -50,6 +54,11 @@ CASES = [
 ]
 
 
+# Scattering-kernel solver, reported only: nodes per sheet (two sheets), 31 fields.
+COLLISION_CASES = [256, 512, 1024]
+COLLISION_FIELDS = 31
+
+
 def contour(n):
     return generators.polar(n, k_fermi=lambda p: 7.35e9 - 0.25e9 * np.cos(4 * p), mass=5 * ELECTRON_MASS,
                             tau=lambda p: scattering.cos4phi(p, 1e-13, anisotropy=0.3), carrier="hole")
@@ -67,6 +76,33 @@ def time_case(n, n_fields, symmetrize, repeats):
         call()
         best = min(best, time.perf_counter() - start)
     return 1e3 * best
+
+
+def time_collision_case(n, repeats):
+    period = 2 * np.pi / 3.87e-10
+    sheets = generators.open_sheets(n, k0=5e9, velocity=2e5, tau=1e-13, period=period, warping=1e9)
+
+    def kernel(kx, ky, kx2, ky2):  # periodic along the sheets: summed over the images k_y ± G
+        return sum(2e-33 * np.exp(-((kx - kx2) ** 2 + (ky - ky2 + image * period) ** 2) / (2 * 3e9**2))
+                   for image in (-1, 0, 1))
+
+    fields = np.linspace(0, 30, COLLISION_FIELDS)
+    call = lambda: conductivity(sheets, fields, layer_spacing=1e-9, period=(0.0, period),  # noqa: E731
+                                scattering_kernel=kernel)
+    call()
+    best = np.inf
+    for _ in range(repeats):
+        start = time.perf_counter()
+        call()
+        best = min(best, time.perf_counter() - start)
+    return 1e3 * best
+
+
+def collision_table(ms):
+    lines = ["| nodes coupled | fields | time (ms) | ms per field |", "|---:|---:|---:|---:|"]
+    for n, t in ms.items():
+        lines.append(f"| {2 * n} | {COLLISION_FIELDS} | {t:.0f} | {t / COLLISION_FIELDS:.1f} |")
+    return "\n".join(lines)
 
 
 def key(case):
@@ -109,8 +145,11 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     ms = {key(case): time_case(*case, repeats=args.repeats) for case in CASES}
+    collisions = {n: time_collision_case(n, repeats=3) for n in COLLISION_CASES}
     print(machine())
     print(table(ms))
+    print("\nWith a scattering kernel (reported, not gated):")
+    print(collision_table(collisions))
     results = checks(ms)
     for label, value, ok in results:
         print(f"[{'ok' if ok else 'FAIL'}] {label}: {value}")
@@ -134,7 +173,11 @@ def main(argv=None):
             "`conductivity_tensor`, numba backend, warm, best of "
             f"{args.repeats} calls, on a fourfold pocket with anisotropic τ and fields from 0.1 to 100 T.\n\n"
             f"Machine: {machine()}.\n\n{table(ms)}\n\n"
-            + "\n".join(f"- {'ok' if ok else 'FAIL'}: {label}: {value}" for label, value, ok in results) + "\n",
+            + "\n".join(f"- {'ok' if ok else 'FAIL'}: {label}: {value}" for label, value, ok in results) + "\n"
+            + "\n## With a scattering kernel\n\n`conductivity(..., scattering_kernel=...)` on a pair of warped open "
+            f"sheets coupled by a smooth kernel, {COLLISION_FIELDS} fields, best of 3 calls. It is a dense solve per "
+            "field on the nodes the kernel couples, so the time grows as their number cubed. Reported, not gated.\n\n"
+            + collision_table(collisions) + "\n",
             encoding="utf-8",
         )
     return status

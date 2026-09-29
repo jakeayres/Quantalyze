@@ -64,6 +64,8 @@ class PreparedContour:
             None for a 2D contour. Shape (N,).
         lz: Mean free paths ℓ_z = v_z τ (m), never drift-corrected (∮ v_z dt is
             physical); None for a 2D contour. Shape (N,).
+        index: The input position of each prepared node (int), so that results on the
+            prepared nodes can be mapped back to the user's rows. Shape (N,).
     """
 
     kx: np.ndarray
@@ -80,6 +82,7 @@ class PreparedContour:
     period: np.ndarray
     vz: Optional[np.ndarray] = None
     lz: Optional[np.ndarray] = None
+    index: Optional[np.ndarray] = None
 
 
 def _float_array(values) -> np.ndarray:
@@ -106,6 +109,273 @@ def _frozen(array: np.ndarray) -> np.ndarray:
     array = np.ascontiguousarray(array, dtype=np.float64)
     array.setflags(write=False)
     return array
+
+
+@dataclass(frozen=True)
+class ContourGeometry:
+    """A validated contour ordered along the motion: everything that does not depend on τ.
+
+    All arrays are C-contiguous and read-only.
+
+    Attributes:
+        kx: Node wavevectors k_x (m⁻¹), in the order the carriers move. Shape (N,).
+        ky: Node wavevectors k_y (m⁻¹). Shape (N,).
+        vx: Group velocities v_x (m/s). Shape (N,).
+        vy: Group velocities v_y (m/s). Shape (N,).
+        speed: In-plane speed |v| (m/s). Shape (N,).
+        s: Geometric time of segment n → n+1 (s·T), as in `PreparedContour`. Shape (N,).
+        charge: Carrier charge q (C).
+        period: G in the prepared order of motion (m⁻¹); zero for a closed contour. Shape (2,).
+        index: The input position of each prepared node (int). Shape (N,).
+        vz: Velocities v_z (m/s) of a k_z slice, or None. Shape (N,).
+    """
+
+    kx: np.ndarray
+    ky: np.ndarray
+    vx: np.ndarray
+    vy: np.ndarray
+    speed: np.ndarray
+    s: np.ndarray
+    charge: float
+    period: np.ndarray
+    index: np.ndarray
+    vz: Optional[np.ndarray] = None
+
+
+def _period(period) -> Optional[np.ndarray]:
+    if period is None:
+        return None
+    wrap = np.asarray(period, dtype=np.float64)
+    if wrap.shape != (2,) or not np.all(np.isfinite(wrap)) or not np.any(wrap):
+        raise ValueError(f"period must be a finite, non-zero pair (G_x, G_y), not {period!r}")
+    return wrap
+
+
+def contour_geometry(kx, ky, vx, vy, *, charge: float = -ELEMENTARY_CHARGE,
+                     period: Optional[Sequence[float]] = None, vz=None) -> ContourGeometry:
+    """Validate a contour's nodes and velocities, and order them along the motion.
+
+    Everything in `prepare_contour` that does not involve τ: the checks on k and v, the
+    closing-point drop, the orientation, the normal-velocity warning and the geometric
+    time s_n. `index` records which input node each prepared node is, so that quantities
+    computed on the prepared nodes (a τ from a scattering kernel, say) can be mapped back.
+
+    Args:
+        kx, ky, vx, vy, vz, charge, period: As in `prepare_contour`.
+
+    Returns:
+        ContourGeometry.
+
+    Raises:
+        ValueError: As `prepare_contour`, for everything except τ.
+    """
+    wrap = _period(period)
+    charge = float(charge)
+    if not np.isfinite(charge) or charge == 0:
+        raise ValueError(f"charge must be finite and non-zero, not {charge}")
+    # The geometric time and the σ prefactor are written for carriers of charge ±e.
+    if abs(abs(charge) / ELEMENTARY_CHARGE - 1) > 1e-12:
+        raise ValueError(f"charge must be ±e ({ELEMENTARY_CHARGE} C), not {charge}")
+
+    kx, ky, vx, vy = (_as_1d(n, a) for n, a in (("kx", kx), ("ky", ky), ("vx", vx), ("vy", vy)))
+    vz = None if vz is None else _as_1d("vz", vz)
+    lengths = {"kx": kx.size, "ky": ky.size, "vx": vx.size, "vy": vy.size}
+    if vz is not None:
+        lengths["vz"] = vz.size
+    if len(set(lengths.values())) != 1:
+        raise ValueError(f"kx, ky, vx, vy and tau must all have the same length, not {lengths}")
+    named = [("kx", kx), ("ky", ky), ("vx", vx), ("vy", vy)] + ([("vz", vz)] if vz is not None else [])
+    for name, array in named:
+        bad = np.flatnonzero(~np.isfinite(array))
+        if bad.size:
+            raise ValueError(f"{name} must be finite; it is {array[bad[0]]} at node {bad[0]}")
+    speed = np.hypot(vx, vy)  # (N,)
+    bad = np.flatnonzero(speed == 0)
+    if bad.size:
+        raise ValueError(f"the velocity must be non-zero; it vanishes at node {bad[0]}")
+    if kx.size < MIN_NODES:
+        raise ValueError(f"a contour needs at least {MIN_NODES} nodes, not {kx.size}")
+    index = np.arange(kx.size)
+
+    # A closing point that repeats the first node, e.g. from θ = linspace(0, 2π, N), or on
+    # an open orbit the first node shifted by ±G.
+    size = max(np.ptp(kx), np.ptp(ky), 0.0 if wrap is None else float(np.hypot(*wrap)))
+    same_point = _SAME_POINT * size
+    shifts = [(0.0, 0.0)] if wrap is None else [tuple(wrap), tuple(-wrap)]
+    if min(np.hypot(kx[-1] - kx[0] - gx, ky[-1] - ky[0] - gy) for gx, gy in shifts) <= same_point:
+        kx, ky, vx, vy, speed, index = (a[:-1] for a in (kx, ky, vx, vy, speed, index))
+        vz = None if vz is None else vz[:-1]
+        if kx.size < MIN_NODES:
+            raise ValueError(
+                f"a contour needs at least {MIN_NODES} distinct nodes, not {kx.size} "
+                "(the last point repeats the first)"
+            )
+
+    dkx = _following(kx) - kx  # segment n: node n → n+1, (N,)
+    dky = _following(ky) - ky
+    if wrap is not None:
+        # The last segment ends at the first node shifted by whichever of ±G is adjacent.
+        if np.hypot(dkx[-1] - wrap[0], dky[-1] - wrap[1]) < np.hypot(dkx[-1] + wrap[0], dky[-1] + wrap[1]):
+            wrap = -wrap
+        dkx[-1] += wrap[0]
+        dky[-1] += wrap[1]
+    length = np.hypot(dkx, dky)
+    bad = np.flatnonzero(length <= same_point)
+    if bad.size:
+        n = bad[0]
+        raise ValueError(f"nodes {n} and {(n + 1) % kx.size} coincide (a zero-length segment)")
+    if length[-1] > _OPEN_GAP * np.max(length[:-1]):
+        ratio = length[-1] / np.max(length[:-1])
+        if wrap is None:
+            raise ValueError(
+                "the contour is not closed: the gap from the last node back to the first is "
+                f"{ratio:.1f} times the longest other segment. "
+                "Sample the whole orbit, or pass period for an open orbit"
+            )
+        raise ValueError(
+            "period does not join the last node to the first: the gap is "
+            f"{ratio:.1f} times the longest other segment. Give the nodes of exactly one period"
+        )
+
+    # Direction of motion on each segment: dk/dt ∝ q (v_y, −v_x), averaged over its ends.
+    sign = np.sign(charge)
+    tx = 0.5 * sign * (vy + _following(vy))
+    ty = -0.5 * sign * (vx + _following(vx))
+    along = dkx * tx + dky * ty  # (N,)
+    if np.all(along < 0):
+        order = np.concatenate(([0], np.arange(kx.size - 1, 0, -1)))  # reverse, keeping node 0 first
+        kx, ky, vx, vy, speed, index = (a[order] for a in (kx, ky, vx, vy, speed, index))
+        vz = None if vz is None else vz[order]
+        # The same segments, crossed the other way and in the opposite order.
+        dkx, dky, length = -dkx[::-1], -dky[::-1], length[::-1]
+        if wrap is not None:
+            wrap = -wrap
+    elif not np.all(along > 0):
+        majority_forward = np.sum(along > 0) >= np.sum(along < 0)
+        against = np.flatnonzero(along <= 0 if majority_forward else along >= 0)
+        raise ValueError(
+            "the nodes are not in order along the contour: segment(s) starting at node(s) "
+            f"{against[:5].tolist()} run against the motion set by the velocities"
+        )
+
+    # Velocities should be normal to the contour: compare each segment with the mean of
+    # the unit velocities at its ends.
+    ux, uy = vx / speed, vy / speed
+    mx, my = ux + _following(ux), uy + _following(uy)
+    mean_norm = np.hypot(mx, my)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cosine = np.where(mean_norm > 0, np.abs(dkx * mx + dky * my) / (length * mean_norm), 1.0)
+    worst = int(np.argmax(cosine))
+    if cosine[worst] > _NORMAL_TOLERANCE:
+        angle = np.degrees(np.arcsin(min(cosine[worst], 1.0)))
+        warnings.warn(
+            f"the velocities are not normal to the contour (off by {angle:.1f}° on segment {worst}). "
+            "Either v is not the group velocity ∇ε/ħ in m/s (unit vectors, swapped components, "
+            "k not in m⁻¹), or the contour is too coarsely sampled where it curves sharply",
+            UserWarning,
+            stacklevel=3,
+        )
+
+    s = HBAR * length / (2 * ELEMENTARY_CHARGE) * (1 / speed + 1 / _following(speed))  # (N,), s·T
+    index = np.ascontiguousarray(index)
+    index.setflags(write=False)
+    return ContourGeometry(
+        kx=_frozen(kx), ky=_frozen(ky), vx=_frozen(vx), vy=_frozen(vy), speed=_frozen(speed), s=_frozen(s),
+        charge=charge, period=_frozen(np.zeros(2) if wrap is None else wrap), index=index,
+        vz=None if vz is None else _frozen(vz),
+    )
+
+
+def finish_contour(geometry: ContourGeometry, tau, *, remove_drift: Optional[bool] = None) -> PreparedContour:
+    """Add the relaxation time to a contour's geometry: Δg_n, ℓ_n and the drift.
+
+    Args:
+        geometry: From `contour_geometry`.
+        tau: Relaxation times (s) in the **prepared** order (the order of `geometry`), shape
+            (N,), or a single float; finite and positive.
+        remove_drift: As in `prepare_contour`.
+
+    Returns:
+        PreparedContour, with `index` from the geometry.
+
+    Raises:
+        ValueError: If τ is not finite and positive, has the wrong length, or
+            `remove_drift=True` is combined with an open orbit.
+
+    Warns:
+        UserWarning: If τ changes by more than about 1.5× between neighbouring nodes.
+    """
+    is_open = bool(np.any(geometry.period))
+    if is_open:
+        if remove_drift:
+            raise ValueError("remove_drift=True cannot be combined with period: on an open orbit "
+                             "the drift ∮ v dt is physical")
+        remove_drift = False
+    elif remove_drift is None:
+        remove_drift = True
+
+    n_nodes = geometry.kx.size
+    tau = _float_array(tau)
+    if tau.ndim == 0:
+        tau = np.full(n_nodes, float(tau))
+    tau = _as_1d("tau", tau)
+    if tau.size != n_nodes:
+        raise ValueError(f"tau must have one value per node ({n_nodes}), not {tau.size}")
+    bad = np.flatnonzero(~np.isfinite(tau))
+    if bad.size:
+        raise ValueError(f"tau must be finite; it is {tau[bad[0]]} at node {geometry.index[bad[0]]}")
+    bad = np.flatnonzero(tau <= 0)
+    if bad.size:
+        raise ValueError(f"tau must be positive; it is {tau[bad[0]]} at node {geometry.index[bad[0]]}")
+
+    # Measured in the input order, so the nodes named are the user's.
+    ordered = tau[np.argsort(geometry.index)]
+    jump = np.abs(np.log(_following(ordered) / ordered))  # |Δ ln τ| on each segment, (N,)
+    steepest = int(np.argmax(jump))
+    if jump[steepest] > _TAU_JUMP:
+        first, second = np.sort(geometry.index)[[steepest, (steepest + 1) % n_nodes]]
+        warnings.warn(
+            f"tau changes by a factor of {np.exp(jump[steepest]):.2f} between neighbouring nodes {first} and "
+            f"{second}: scattering that varies this fast from node to node (a hot spot only a "
+            "node or two wide) is under-resolved, and sigma, the magnetoresistance especially, can be off by "
+            "several per cent. Use more nodes where tau varies, and check the result against twice as many",
+            UserWarning,
+            stacklevel=3,
+        )
+
+    # ∫ds/τ over the segment, with the rate 1/τ̄ of its mean τ. This keeps the orbit a
+    # carrier traces, ∫ℓ dg = ½Δg(ℓ_n + ℓ_{n+1}) = s_n(τ_n v_n + τ_{n+1} v_{n+1})/(τ_n + τ_{n+1}),
+    # within a (τ_n − τ_{n+1})(v_n − v_{n+1}) term of ½s_n(v_n + v_{n+1}), which does not
+    # depend on τ at all (as the true ∫v ds does not), so the high-field limit stays
+    # accurate where τ varies quickly.
+    damping = 2 * geometry.s / (tau + _following(tau))  # (N,), T
+
+    lx, ly = geometry.vx * tau, geometry.vy * tau  # (N,), m
+    drift = np.zeros(2)
+    if remove_drift:
+        drift[0] = np.sum(0.5 * damping * (lx + _following(lx))) / np.sum(damping)
+        drift[1] = np.sum(0.5 * damping * (ly + _following(ly))) / np.sum(damping)
+        lx = lx - drift[0]
+        ly = ly - drift[1]
+
+    vz = geometry.vz
+    return PreparedContour(
+        kx=geometry.kx,
+        ky=geometry.ky,
+        vx=geometry.vx,
+        vy=geometry.vy,
+        tau=_frozen(tau),
+        s=geometry.s,
+        damping=_frozen(damping),
+        lx=_frozen(lx),
+        ly=_frozen(ly),
+        drift=_frozen(drift),
+        charge=geometry.charge,
+        period=geometry.period,
+        vz=vz,
+        lz=None if vz is None else _frozen(vz * tau),
+        index=geometry.index,
+    )
 
 
 def prepare_contour(
@@ -141,6 +411,8 @@ def prepare_contour(
     instead of falling as 1/B². On an open orbit the drift is physical (it is why
     open-orbit magnetoresistance does not saturate), so it is never removed.
 
+    This is `finish_contour(contour_geometry(...), tau)`, with τ taken in the input order.
+
     Args:
         kx: Node wavevectors k_x (m⁻¹), array-like of shape (N,).
         ky: Node wavevectors k_y (m⁻¹), array-like of shape (N,).
@@ -158,7 +430,7 @@ def prepare_contour(
 
     Returns:
         PreparedContour with the ordered nodes, velocities, mean free paths, s_n, Δg_n,
-        drift and period.
+        drift, period and the input position of each node.
 
     Raises:
         ValueError: If the arrays are not 1-D or differ in length; if any value is
@@ -182,174 +454,27 @@ def prepare_contour(
         >>> df = bz.generators.circle(512, k_fermi=7e9, mass=ELECTRON_MASS, tau=1e-13)
         >>> contour = prepare_contour(df["kx"], df["ky"], df["vx"], df["vy"], df["tau"])
     """
-    wrap = None  # G for an open orbit
-    if period is not None:
-        wrap = np.asarray(period, dtype=np.float64)
-        if wrap.shape != (2,) or not np.all(np.isfinite(wrap)) or not np.any(wrap):
-            raise ValueError(f"period must be a finite, non-zero pair (G_x, G_y), not {period!r}")
-        if remove_drift:
-            raise ValueError("remove_drift=True cannot be combined with period: on an open orbit "
-                             "the drift ∮ v dt is physical")
-        remove_drift = False
-    elif remove_drift is None:
-        remove_drift = True
-
-    charge = float(charge)
-    if not np.isfinite(charge) or charge == 0:
-        raise ValueError(f"charge must be finite and non-zero, not {charge}")
-    # The geometric time and the σ prefactor are written for carriers of charge ±e.
-    if abs(abs(charge) / ELEMENTARY_CHARGE - 1) > 1e-12:
-        raise ValueError(f"charge must be ±e ({ELEMENTARY_CHARGE} C), not {charge}")
-
-    kx, ky, vx, vy = (_as_1d(n, a) for n, a in (("kx", kx), ("ky", ky), ("vx", vx), ("vy", vy)))
+    if _period(period) is not None and remove_drift:
+        raise ValueError("remove_drift=True cannot be combined with period: on an open orbit "
+                         "the drift ∮ v dt is physical")
+    size = _float_array(kx).size
     tau = _float_array(tau)
     if tau.ndim == 0:
-        tau = np.full(kx.shape, float(tau))
+        tau = np.full(size, float(tau))
     tau = _as_1d("tau", tau)
-    vz = None if vz is None else _as_1d("vz", vz)
-    lengths = {"kx": kx.size, "ky": ky.size, "vx": vx.size, "vy": vy.size, "tau": tau.size}
-    if vz is not None:
-        lengths["vz"] = vz.size
-    if len(set(lengths.values())) != 1:
+    if tau.size != size:
+        lengths = {"kx": size, "ky": _float_array(ky).size, "vx": _float_array(vx).size,
+                   "vy": _float_array(vy).size, "tau": tau.size}
         raise ValueError(f"kx, ky, vx, vy and tau must all have the same length, not {lengths}")
-    named = [("kx", kx), ("ky", ky), ("vx", vx), ("vy", vy), ("tau", tau)] + ([("vz", vz)] if vz is not None else [])
-    for name, array in named:
-        bad = np.flatnonzero(~np.isfinite(array))
-        if bad.size:
-            raise ValueError(f"{name} must be finite; it is {array[bad[0]]} at node {bad[0]}")
+    geometry = contour_geometry(kx, ky, vx, vy, charge=charge, period=period, vz=vz)
+    # Every input τ must be valid, including that of a dropped closing node.
+    bad = np.flatnonzero(~np.isfinite(tau))
+    if bad.size:
+        raise ValueError(f"tau must be finite; it is {tau[bad[0]]} at node {bad[0]}")
     bad = np.flatnonzero(tau <= 0)
     if bad.size:
         raise ValueError(f"tau must be positive; it is {tau[bad[0]]} at node {bad[0]}")
-    speed = np.hypot(vx, vy)  # (N,)
-    bad = np.flatnonzero(speed == 0)
-    if bad.size:
-        raise ValueError(f"the velocity must be non-zero; it vanishes at node {bad[0]}")
-    if kx.size < MIN_NODES:
-        raise ValueError(f"a contour needs at least {MIN_NODES} nodes, not {kx.size}")
-
-    # A closing point that repeats the first node, e.g. from θ = linspace(0, 2π, N), or on
-    # an open orbit the first node shifted by ±G.
-    size = max(np.ptp(kx), np.ptp(ky), 0.0 if wrap is None else float(np.hypot(*wrap)))
-    same_point = _SAME_POINT * size
-    shifts = [(0.0, 0.0)] if wrap is None else [tuple(wrap), tuple(-wrap)]
-    if min(np.hypot(kx[-1] - kx[0] - gx, ky[-1] - ky[0] - gy) for gx, gy in shifts) <= same_point:
-        kx, ky, vx, vy, tau, speed = (a[:-1] for a in (kx, ky, vx, vy, tau, speed))
-        vz = None if vz is None else vz[:-1]
-        if kx.size < MIN_NODES:
-            raise ValueError(
-                f"a contour needs at least {MIN_NODES} distinct nodes, not {kx.size} "
-                "(the last point repeats the first)"
-            )
-
-    jump = np.abs(np.log(_following(tau) / tau))  # |Δ ln τ| on each segment, (N,)
-    steepest = int(np.argmax(jump))
-    if jump[steepest] > _TAU_JUMP:
-        warnings.warn(
-            f"tau changes by a factor of {np.exp(jump[steepest]):.2f} between neighbouring nodes {steepest} and "
-            f"{(steepest + 1) % kx.size}: scattering that varies this fast from node to node (a hot spot only a "
-            "node or two wide) is under-resolved, and sigma, the magnetoresistance especially, can be off by "
-            "several per cent. Use more nodes where tau varies, and check the result against twice as many",
-            UserWarning,
-            stacklevel=2,
-        )
-
-    dkx = _following(kx) - kx  # segment n: node n → n+1, (N,)
-    dky = _following(ky) - ky
-    if wrap is not None:
-        # The last segment ends at the first node shifted by whichever of ±G is adjacent.
-        if np.hypot(dkx[-1] - wrap[0], dky[-1] - wrap[1]) < np.hypot(dkx[-1] + wrap[0], dky[-1] + wrap[1]):
-            wrap = -wrap
-        dkx[-1] += wrap[0]
-        dky[-1] += wrap[1]
-    length = np.hypot(dkx, dky)
-    bad = np.flatnonzero(length <= same_point)
-    if bad.size:
-        n = bad[0]
-        raise ValueError(f"nodes {n} and {(n + 1) % kx.size} coincide (a zero-length segment)")
-    if length[-1] > _OPEN_GAP * np.max(length[:-1]):
-        ratio = length[-1] / np.max(length[:-1])
-        if wrap is None:
-            raise ValueError(
-                "the contour is not closed: the gap from the last node back to the first is "
-                f"{ratio:.1f} times the longest other segment. "
-                "Sample the whole orbit, or pass period for an open orbit"
-            )
-        raise ValueError(
-            "period does not join the last node to the first: the gap is "
-            f"{ratio:.1f} times the longest other segment. Give the nodes of exactly one period"
-        )
-
-    # Direction of motion on each segment: dk/dt ∝ q (v_y, −v_x), averaged over its ends.
-    sign = np.sign(charge)
-    tx = 0.5 * sign * (vy + _following(vy))
-    ty = -0.5 * sign * (vx + _following(vx))
-    along = dkx * tx + dky * ty  # (N,)
-    if np.all(along < 0):
-        order = np.concatenate(([0], np.arange(kx.size - 1, 0, -1)))  # reverse, keeping node 0 first
-        kx, ky, vx, vy, tau, speed = (a[order] for a in (kx, ky, vx, vy, tau, speed))
-        vz = None if vz is None else vz[order]
-        # The same segments, crossed the other way and in the opposite order.
-        dkx, dky, length = -dkx[::-1], -dky[::-1], length[::-1]
-        if wrap is not None:
-            wrap = -wrap
-    elif not np.all(along > 0):
-        majority_forward = np.sum(along > 0) >= np.sum(along < 0)
-        against = np.flatnonzero(along <= 0 if majority_forward else along >= 0)
-        raise ValueError(
-            "the nodes are not in order along the contour: segment(s) starting at node(s) "
-            f"{against[:5].tolist()} run against the motion set by the velocities"
-        )
-
-    # Velocities should be normal to the contour: compare each segment with the mean of
-    # the unit velocities at its ends.
-    ux, uy = vx / speed, vy / speed
-    mx, my = ux + _following(ux), uy + _following(uy)
-    mean_norm = np.hypot(mx, my)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        cosine = np.where(mean_norm > 0, np.abs(dkx * mx + dky * my) / (length * mean_norm), 1.0)
-    worst = int(np.argmax(cosine))
-    if cosine[worst] > _NORMAL_TOLERANCE:
-        angle = np.degrees(np.arcsin(min(cosine[worst], 1.0)))
-        warnings.warn(
-            f"the velocities are not normal to the contour (off by {angle:.1f}° on segment {worst}). "
-            "Either v is not the group velocity ∇ε/ħ in m/s (unit vectors, swapped components, "
-            "k not in m⁻¹), or the contour is too coarsely sampled where it curves sharply",
-            UserWarning,
-            stacklevel=2,
-        )
-
-    s = HBAR * length / (2 * ELEMENTARY_CHARGE) * (1 / speed + 1 / _following(speed))  # (N,), s·T
-    # ∫ds/τ over the segment, with the rate 1/τ̄ of its mean τ. This keeps the orbit a
-    # carrier traces, ∫ℓ dg = ½Δg(ℓ_n + ℓ_{n+1}) = s_n(τ_n v_n + τ_{n+1} v_{n+1})/(τ_n + τ_{n+1}),
-    # within a (τ_n − τ_{n+1})(v_n − v_{n+1}) term of ½s_n(v_n + v_{n+1}), which does not
-    # depend on τ at all (as the true ∫v ds does not), so the high-field limit stays
-    # accurate where τ varies quickly.
-    damping = 2 * s / (tau + _following(tau))  # (N,), T
-
-    lx, ly = vx * tau, vy * tau  # (N,), m
-    drift = np.zeros(2)
-    if remove_drift:
-        drift[0] = np.sum(0.5 * damping * (lx + _following(lx))) / np.sum(damping)
-        drift[1] = np.sum(0.5 * damping * (ly + _following(ly))) / np.sum(damping)
-        lx = lx - drift[0]
-        ly = ly - drift[1]
-
-    return PreparedContour(
-        kx=_frozen(kx),
-        ky=_frozen(ky),
-        vx=_frozen(vx),
-        vy=_frozen(vy),
-        tau=_frozen(tau),
-        s=_frozen(s),
-        damping=_frozen(damping),
-        lx=_frozen(lx),
-        ly=_frozen(ly),
-        drift=_frozen(drift),
-        charge=charge,
-        period=_frozen(np.zeros(2) if wrap is None else wrap),
-        vz=None if vz is None else _frozen(vz),
-        lz=None if vz is None else _frozen(vz * tau),
-    )
+    return finish_contour(geometry, tau[geometry.index], remove_drift=remove_drift)
 
 
 # Gauss–Legendre on [0, 1]: three points integrate the degree-5 Green's-theorem

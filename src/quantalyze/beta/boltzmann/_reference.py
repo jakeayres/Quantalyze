@@ -132,6 +132,55 @@ class ParametricContour:
         tau_fn = tau if callable(tau) else (lambda p: np.full(np.shape(p), float(tau)))
         return cls(k=k, v=v, tau=tau_fn, dk=dk)
 
+    @classmethod
+    def warped_band_sheet(cls, *, velocity, k0, lattice_constant, hoppings, side, tau, interlayer_hopping=None,
+                          kz=0.0, layer_spacing=None):
+        """One period of sheet s = ±1 of ε = ħv₀(|k_y| − k₀) − Σₙ 2tₙcos(nk_x a) [− 2t_z cos(k_z d)].
+
+        The parameter maps to k_x = (2π/a)(φ/2π − ½), and k_y = s[k₀ + (Σₙ 2tₙcos(nk_x a)
+        + 2t_z cos(k_z d))/(ħv₀)], with v = ∇ε/ħ. With `interlayer_hopping` t_z the contour
+        is the slice at `kz` of a warped surface and carries v_z = 2t_z d sin(k_z d)/ħ.
+        `hoppings` is {n: tₙ (J)}; `tau` is a float (may be inf) or a function of φ.
+        """
+        a = lattice_constant
+        shift = 0.0 if interlayer_hopping is None else 2 * interlayer_hopping * np.cos(kz * layer_spacing)
+
+        def kx_of(p):
+            return np.asarray(p, dtype=float) / a - np.pi / a
+
+        def k(p):
+            kx = kx_of(p)
+            warp = sum(2 * t * np.cos(n * kx * a) for n, t in hoppings.items())
+            return kx, side * (k0 + (warp + shift) / (HBAR * velocity))
+
+        def dk(p):
+            kx = kx_of(p)
+            slope = -sum(2 * t * n * a * np.sin(n * kx * a) for n, t in hoppings.items()) / (HBAR * velocity)
+            return np.full(kx.shape, 1 / a), side * slope / a
+
+        def v(p):
+            kx = kx_of(p)
+            return (sum(2 * t * n * a * np.sin(n * kx * a) for n, t in hoppings.items()) / HBAR,
+                    np.full(kx.shape, side * velocity))
+
+        vz = None
+        if interlayer_hopping is not None:
+            speed_z = 2 * interlayer_hopping * layer_spacing * np.sin(kz * layer_spacing) / HBAR
+            vz = lambda p: np.full(np.shape(p), speed_z)  # noqa: E731
+        tau_fn = tau if callable(tau) else (lambda p: np.full(np.shape(p), float(tau)))
+        return cls(k=k, v=v, tau=tau_fn, dk=dk, vz=vz)
+
+
+def _parameter_derivative(contour: ParametricContour, phi) -> Pair:
+    """dk/dφ (m⁻¹): the contour's own derivative, or eighth-order central differences."""
+    phi = np.asarray(phi, dtype=float)
+    if contour.dk is not None:
+        dkx, dky = contour.dk(phi)
+        return np.broadcast_to(dkx, phi.shape).astype(float), np.broadcast_to(dky, phi.shape).astype(float)
+    stencil = phi[..., None] + _FD_OFFSETS * _FD_STEP  # (..., 9)
+    kx, ky = contour.k(stencil)
+    return kx @ _FD_WEIGHTS / _FD_STEP, ky @ _FD_WEIGHTS / _FD_STEP
+
 
 class _Geometry:
     """Per-contour quantities that do not depend on the field."""
@@ -158,13 +207,7 @@ class _Geometry:
         return np.broadcast_to(vx, np.shape(phi)).astype(float), np.broadcast_to(vy, np.shape(phi)).astype(float)
 
     def dk(self, phi) -> Pair:
-        phi = np.asarray(phi, dtype=float)
-        if self.contour.dk is not None:
-            dkx, dky = self.contour.dk(phi)
-            return np.broadcast_to(dkx, phi.shape).astype(float), np.broadcast_to(dky, phi.shape).astype(float)
-        stencil = phi[..., None] + _FD_OFFSETS * _FD_STEP  # (..., 9)
-        kx, ky = self.contour.k(stencil)
-        return kx @ _FD_WEIGHTS / _FD_STEP, ky @ _FD_WEIGHTS / _FD_STEP
+        return _parameter_derivative(self.contour, phi)
 
     def velocity(self, phi) -> Pair:
         return self._v(np.asarray(phi, dtype=float))
@@ -331,3 +374,117 @@ def _sigma_at_field(geometry, field, layer_spacing, charge, spin_degeneracy, orb
         previous = current
         n_nodes *= 2
     raise RuntimeError(f"the reference σ did not converge to rtol = {rtol} with {max_nodes} outer points")
+
+
+# ---------------------------------------------------------------------------
+# Scattering kernels: a spectral reference for the full linearised Boltzmann equation
+#
+# With a kernel P(k, k′) the vector mean free path L obeys, along each orbit,
+#     dL/dt + L/τ = v + ∫ dμ(k′) P(k, k′) L(k′),     1/τ = 1/τ₀ + ∫ dμ(k′) P(k, k′),
+# and σ_ij = g_s e² ∫ dμ v_i L_j. Here dμ = |dk| / (4π²ħ|v| d) is the density of states per
+# spin per volume on a contour, times the contour's weight (1/N_z for one of N_z k_z
+# slices). Each contour is sampled at M equally spaced parameter values; d/dt = φ̇ d/dφ
+# uses the Fourier differentiation matrix, and ∫dμ′ the trapezoid rule, both spectrally
+# accurate for smooth periodic data. The rates are the row sums of the same quadrature,
+# so the kernel conserves particles exactly. Nothing here is shared with the fast code.
+# ---------------------------------------------------------------------------
+
+def _fourier_derivative_matrix(points: int) -> np.ndarray:
+    """d/dφ on φ_j = 2πj/M for even M: D_ij = ½(−1)^{i−j} cot((φ_i − φ_j)/2), D_ii = 0."""
+    if points % 2:
+        raise ValueError(f"points must be even, not {points}")
+    offset = np.arange(points)[:, None] - np.arange(points)[None, :]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        matrix = 0.5 * (-1.0) ** offset / np.tan(offset * np.pi / points)
+    matrix[np.diag_indices(points)] = 0.0
+    return matrix
+
+
+def _collision_nodes(contours, kernel, *, layer_spacing, points, weights, kz, charge):
+    """Nodes, velocities, density-of-states weights, motion per tesla, τ₀ and the kernel."""
+    weights = [1.0] * len(contours) if weights is None else list(weights)
+    phi = TWO_PI * np.arange(points) / points
+    parts = {name: [] for name in ("kx", "ky", "kz", "v", "weight", "motion", "tau0")}
+    for index, contour in enumerate(contours):
+        kx, ky = (np.broadcast_to(a, phi.shape).astype(float) for a in contour.k(phi))
+        dkx, dky = _parameter_derivative(contour, phi)
+        vx, vy = (np.broadcast_to(a, phi.shape).astype(float) for a in contour.v(phi))
+        velocity = [vx, vy]
+        if contour.vz is not None:
+            velocity.append(np.broadcast_to(contour.vz(phi), phi.shape).astype(float))
+        speed, chord = np.hypot(vx, vy), np.hypot(dkx, dky)
+        parts["kx"].append(kx)
+        parts["ky"].append(ky)
+        parts["kz"].append(np.full(points, np.nan if kz is None else float(kz[index])))
+        parts["v"].append(np.stack(velocity, axis=1))  # (M, d)
+        parts["weight"].append(weights[index] * (TWO_PI / points) * chord
+                               / (4 * np.pi**2 * HBAR * speed * layer_spacing))
+        # ħ dk/dt = q v × B = qB (v_y, −v_x): φ̇ per tesla, signed.
+        parts["motion"].append(charge / HBAR * (vy * dkx - vx * dky) / chord**2)
+        parts["tau0"].append(np.broadcast_to(contour.tau(phi), phi.shape).astype(float))
+    nodes = {name: np.concatenate(values) for name, values in parts.items()}
+    first = (nodes["kx"][:, None], nodes["ky"][:, None])
+    second = (nodes["kx"][None, :], nodes["ky"][None, :])
+    if kz is not None:
+        first, second = first + (nodes["kz"][:, None],), second + (nodes["kz"][None, :],)
+    size = nodes["kx"].size
+    nodes["kernel"] = np.array(np.broadcast_to(np.asarray(kernel(*first, *second), dtype=float), (size, size)))
+    nodes["rate"] = 1.0 / nodes["tau0"] + nodes["kernel"] @ nodes["weight"]
+    return nodes
+
+
+def _collision_solve(nodes, field, derivative, points):
+    """L at every node for the sources v_j, shape (M_total, d)."""
+    operator = np.diag(nodes["rate"]) - nodes["kernel"] * nodes["weight"][None, :]
+    for start in range(0, nodes["rate"].size, points):
+        block = slice(start, start + points)
+        operator[block, block] += (nodes["motion"][block] * field)[:, None] * derivative
+    if np.any(np.isinf(nodes["tau0"])):
+        # Without background anywhere on a connected set the charge mode is a zero mode;
+        # σ does not depend on it, and least squares picks one solution.
+        return np.linalg.lstsq(operator, nodes["v"], rcond=None)[0]
+    return np.linalg.solve(operator, nodes["v"])
+
+
+def collision_sigma(contours, fields, *, kernel, layer_spacing, points=512, weights=None, kz=None,
+                    charge=-ELEMENTARY_CHARGE, spin_degeneracy=2) -> np.ndarray:
+    """Conductivity with a scattering kernel by spectral collocation (S/m). Tests only.
+
+    Args:
+        contours: `ParametricContour`s, each 2π-periodic in its parameter (closed pockets or
+            one period of an open sheet); their `tau` is the background τ₀ and may be inf.
+        fields: Magnetic field B along ẑ (T), any sign.
+        kernel: P(kx, ky, kx2, ky2), or P(kx, ky, kz, kx2, ky2, kz2) with `kz` (J·m³/s).
+        layer_spacing: Interlayer spacing d (m).
+        points: Parameter values per contour (even).
+        weights: Weight of each contour (1/N_z for k_z slices); 1 by default.
+        kz: k_z of each contour (m⁻¹) for slices of a warped surface; σ is then 3×3.
+        charge: Carrier charge q (C).
+        spin_degeneracy: Spin degeneracy g_s.
+
+    Returns:
+        ndarray of shape (nB, d, d).
+    """
+    nodes = _collision_nodes(contours, kernel, layer_spacing=layer_spacing, points=points, weights=weights,
+                             kz=kz, charge=charge)
+    derivative = _fourier_derivative_matrix(points)
+    source = nodes["v"] * nodes["weight"][:, None]  # (M_total, d)
+    fields = np.atleast_1d(np.asarray(fields, dtype=float))
+    return np.array([spin_degeneracy * ELEMENTARY_CHARGE**2 * source.T @ _collision_solve(nodes, b, derivative, points)
+                     for b in fields])
+
+
+def collision_mean_free_path(contours, *, kernel, layer_spacing, points=512, weights=None, kz=None,
+                             charge=-ELEMENTARY_CHARGE):
+    """The vector mean free path L at B = 0 on each contour, by spectral collocation. Tests only.
+
+    Returns:
+        (L, directions): per contour, L of shape (d, M) at φ_j = 2πj/M, and the direction
+        of motion for B > 0 (+1 along increasing φ). With no background scattering on a
+        connected set of contours, L is defined up to a constant there.
+    """
+    nodes = _collision_nodes(contours, kernel, layer_spacing=layer_spacing, points=points, weights=weights,
+                             kz=kz, charge=charge)
+    ell = _collision_solve(nodes, 0.0, _fourier_derivative_matrix(points), points)
+    starts = range(0, ell.shape[0], points)
+    return [ell[s:s + points].T for s in starts], [float(np.sign(nodes["motion"][s])) for s in starts]

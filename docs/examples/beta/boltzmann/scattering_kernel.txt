@@ -1,0 +1,3 @@
+hbar Gamma from 3.40 (cold) to 6.58 meV (hot spots)
+sigma_yy(0) along the chains: kernel 6.4673e+06, relaxation time 1.1804e+07 S/m
+MR across the chains at 30 T: kernel 5.547, relaxation time 2.243

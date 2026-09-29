@@ -249,6 +249,60 @@ steeply with field, while the nearly circular in-plane pocket has almost none.
     - **`magnetoresistance(sigma, component="zz")`** gives the interlayer
       magnetoresistance; `carrier_density(df, ..., kz="kz")` averages the slices.
 
+### Scattering beyond the relaxation time { #scattering-kernels }
+
+**Pass `scattering_kernel=P` to include where scattered carriers go, not only how often
+they leave.** A relaxation time removes carriers from the current and returns nothing.
+Real scattering sends a carrier from k to particular states k′, and the carriers
+arriving there carry current too: this in-scattering is the current vertex correction.
+Give it as a kernel P(k, k′), the rate for scattering from k into states near k′ per
+unit density of states per spin (J·m³/s). `conductivity` then solves the full
+linearised Boltzmann equation on every contour at once, still exactly in ω_cτ. `tau`
+becomes the background relaxation time (np.inf for none), and the kernel adds its own
+out-scattering rate Γ(k) = ∫dμ′ P(k, k′).
+
+```python
+--8<-- "beta/boltzmann/scattering_kernel.py:example"
+```
+
+```text title="Output"
+--8<-- "beta/boltzmann/scattering_kernel.txt"
+```
+
+![Magnetoresistance across the chains with the scattering kernel, and larger than with a relaxation time of the same rates](../examples/beta/boltzmann/scattering_kernel.png#only-light)
+![Magnetoresistance across the chains with the scattering kernel, and larger than with a relaxation time of the same rates](../examples/beta/boltzmann/scattering_kernel-dark.png#only-dark)
+
+Spin-density-wave fluctuations scatter carriers between the two sheets. Where the
+nesting is best they are hottest, twice as fast as where t′ spoils it. A relaxation time
+with the same rates misses where the carriers go. Scattering onto the other sheet
+reverses their velocity along the chains, so it relaxes that current about twice as
+fast: σ_yy(0) is roughly halved. It also changes how the field reshapes the current
+across the chains, and the magnetoresistance there grows more than twice as large.
+
+!!! warning "Watch out"
+
+    - **`tau` is the background only** when a kernel is given. Do not also fold the
+      kernel's rate into it; `out_scattering_rate` shows what the kernel adds.
+    - **Units:** P is a rate per unit density of states *per spin*, per unit volume. A
+      kernel written against the density of states per layer (per area) must be
+      multiplied by d. Calibrate it with `out_scattering_rate`, or, for an isotropic kernel,
+      with `density_of_states` (P = Γ / N(E_F)).
+    - **The kernel must be finite, non-negative, symmetric** (P(k, k′) = P(k′, k), detailed
+      balance) **and periodic in the reciprocal lattice.** For a kernel peaked at a
+      momentum transfer Q, include both ±Q and reduce k − k′ ∓ Q into the first zone, as
+      `bz.scattering.spin_fluctuation_kernel` does. An asymmetric kernel raises an error.
+    - **Give the whole Fermi surface** (both open sheets, every k_z slice) where the kernel
+      conserves particles and there is no background: otherwise the net current would
+      never relax, and it raises an error.
+    - **Resolve the kernel:** it must vary smoothly from node to node. A warning says so
+      when the out-scattering rate changes on every other node; use more nodes. The same
+      warning catches a kernel that is not periodic along an open sheet.
+    - **Pockets coupled by the kernel are solved together,** so their conductivities do
+      not add, and the cost grows as the cube of the nodes coupled: about 0.4 s per field
+      for 2048 nodes on a laptop. `extrapolate=True` keeps the accuracy with fewer nodes.
+    - **The kernel does not depend on B**, and the distribution is taken at the Fermi
+      level (k_BT ≪ E_F). For a field-dependent kernel, call once per field.
+
 ## `resistivity` { #resistivity }
 
 **Invert σ to get ρ at each field.** It takes the output of `conductivity`, so combine
@@ -286,6 +340,28 @@ accurate to about 10⁻¹⁰ with 512 points even when they are unevenly spaced.
 The high-field limit is R_H = 1/(ne) = 6.9 × 10⁻¹⁰ m³/C for this hole pocket; at 10 T it
 is already within 3% of that.
 
+## `density_of_states` { #density_of_states }
+
+**N(E_F) per spin per volume, summed over the contours.** It uses the same node weights
+as `conductivity`, so it calibrates an isotropic kernel exactly: P = Γ / N(E_F). For a
+circle it is m/(2πħ²d). It is per spin, so the specific heat coefficient is
+γ = (π²/3) k_B² g_s N(E_F).
+
+## `out_scattering_rate` { #out_scattering_rate }
+
+**The rate Γ(k) = ∫dμ′ P(k, k′) a kernel gives at every node,** aligned with each
+DataFrame's rows. Use it to scale a kernel to a target rate, as in the example above. Pass
+every contour the kernel couples: Γ integrates over all of them.
+
+## `mean_free_path` { #mean_free_path }
+
+**The vector mean free path L at zero field at every node.** In the relaxation-time
+approximation it is vτ. With a kernel it includes the in-scattering: it lengthens where
+scattering is forward, and shortens or rotates where carriers are sent across the Fermi
+surface. σ(0) = g_s e² ∫dμ v ⊗ L. The weak-field Hall conductivity is set by the area L
+sweeps out around the Fermi surface (Ong's construction), which then includes the vertex
+corrections.
+
 ## Building contours { #generators }
 
 `bz.generators` makes contour DataFrames:
@@ -298,7 +374,9 @@ is already within 3% of that.
   `open_sheets`.
 
 `tau` can be a number or a function of the angle φ around the pocket; `bz.scattering`
-has `constant`, `cos4phi` and `hot_spot`, and any function of φ works.
+has `constant`, `cos4phi` and `hot_spot`, and any function of φ works. It also has
+`spin_fluctuation_kernel`, a [scattering kernel](#scattering-kernels) peaked at an
+ordering wavevector Q.
 
 If your contour comes from elsewhere (ARPES, DFT), put it in a DataFrame with those
 five columns, converting units with `bz.units` first.
@@ -355,6 +433,20 @@ five columns, converting units with `bz.units` first.
 ??? info "`bz.carrier_density`"
 
     ::: quantalyze.beta.boltzmann.carrier_density
+        options:
+          heading_level: 3
+
+??? info "`bz.density_of_states`, `bz.out_scattering_rate`, `bz.mean_free_path`"
+
+    ::: quantalyze.beta.boltzmann.density_of_states
+        options:
+          heading_level: 3
+
+    ::: quantalyze.beta.boltzmann.out_scattering_rate
+        options:
+          heading_level: 3
+
+    ::: quantalyze.beta.boltzmann.mean_free_path
         options:
           heading_level: 3
 

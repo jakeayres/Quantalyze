@@ -715,3 +715,203 @@ def test_k10_fourfold_symmetry_makes_sigma_isotropic(backend):
           f"|sigma_xy + sigma_yx| {np.max(np.abs(s[:, 0, 1] + s[:, 1, 0])) / scale:.1e}")
     assert np.max(np.abs(s[:, 0, 0] - s[:, 1, 1])) <= 1e-12 * scale
     assert np.max(np.abs(s[:, 0, 1] + s[:, 1, 0])) <= 1e-12 * scale
+
+
+# ---------------------------------------------------------------------------
+# K21–K26: scattering kernels, with the in-scattering a relaxation time leaves out. They run
+# one code path whatever the backend is, so they are not parametrised over it.
+# ---------------------------------------------------------------------------
+
+def lobe_kernel(lobes):
+    """Σ A exp(κ(s k̂·k̂′ − 1)) for lobes (A, κ, s): rotation invariant about k = 0."""
+    def kernel(kx, ky, kx2, ky2):
+        cosine = (kx * kx2 + ky * ky2) / (np.hypot(kx, ky) * np.hypot(kx2, ky2))
+        return sum(a * np.exp(k * (s * cosine - 1)) for a, k, s in lobes)
+    return kernel
+
+
+HOT_Q = (9.9e9, 1.5e9)
+
+
+def hot_kernel(kx, ky, kx2, ky2):
+    """Scattering to near k ± Q plus forward scattering; no symmetry of its own."""
+    dx, dy = kx - kx2, ky - ky2
+    return (3e-33 * (np.exp(-((dx - HOT_Q[0]) ** 2 + (dy - HOT_Q[1]) ** 2) / (2 * 1.5e9**2))
+                     + np.exp(-((dx + HOT_Q[0]) ** 2 + (dy + HOT_Q[1]) ** 2) / (2 * 1.5e9**2)))
+            + 1e-33 * np.exp(-(dx**2 + dy**2) / (2 * 2.5e9**2)))
+
+
+def complete_surfaces(tau0):
+    """name: (frames with tau = tau0, period)."""
+    g = 2 * np.pi / 3.87e-10
+    return {
+        "fourfold pocket": ([fourfold().assign(tau=tau0)], None),
+        "electron and hole pockets": ([gen.circle(N, k_fermi=3e9, mass=M, tau=tau0),
+                                       gen.polar(N, k_fermi=lambda p: 7.35e9 - 0.25e9 * np.cos(4 * p), mass=5 * M,
+                                                 tau=tau0, carrier="hole")], None),
+        "open sheet pair": (gen.open_sheets(N, k0=5e9, velocity=2e5, tau=tau0, period=g), (0.0, g)),
+    }
+
+
+@pytest.mark.parametrize("tau0", [TAU, np.inf])
+@pytest.mark.parametrize("surface", ["fourfold pocket", "electron and hole pockets", "open sheet pair"])
+def test_k21_isotropic_kernel_is_the_relaxation_time_result(surface, tau0):
+    """K21: a constant kernel P scatters into every state alike, so the in-scattering is
+    proportional to the density of the current-carrying solution, which is zero on a complete
+    Fermi surface: σ is exactly the relaxation-time result with 1/τ = 1/τ₀ + P·N(E_F), even
+    for anisotropic pockets and with no background at all. Tolerance 1e-12."""
+    frames, period = complete_surfaces(tau0)[surface]
+    dos = bz.density_of_states(frames, layer_spacing=D, period=period)
+    p_const = 1e13 / dos
+    fields = np.array([0.0, 1.0, 30.0, -30.0])
+    actual = bz.conductivity(frames, fields, layer_spacing=D, period=period, scattering_kernel=lambda *k: p_const)
+    tau = 1 / (1 / tau0 + p_const * dos)
+    expected = bz.conductivity([f.assign(tau=tau) for f in frames], fields, layer_spacing=D, period=period)
+    error = normwise(tensor(actual), tensor(expected))
+    print(f"K21 {surface}, tau0 = {tau0}: max |sigma - RTA| / max|RTA| = {error:.1e}")
+    assert error <= 1e-12
+
+
+@pytest.mark.parametrize("lobes", [[(2e-33, 20.0, 1)], [(1e-33, 8.0, -1)], [(2e-33, 20.0, 1), (1e-33, 8.0, -1)]],
+                         ids=["forward", "backward", "both"])
+def test_k22_circle_with_forward_and_backward_scattering(lobes):
+    """K22: on a circle the angular harmonics diagonalise both the orbital motion and a
+    rotation-invariant kernel, and the current lives in l = ±1: σ is Drude with the transport
+    rate 1/τ_tr = 1/τ₀ + Γ − Γ₁ (the (1 − cos θ) weight). Forward scattering barely relaxes the
+    current; backward scattering relaxes it at up to twice its rate. N = 512, tolerance 1e-4,
+    converging as N⁻² (slope in [−2.1, −1.9] from N = 128)."""
+    mass = 2 * M
+    gamma, gamma1, tau_tr = an.circle_transport_time(tau0=TAU, mass=mass, layer_spacing=D, lobes=lobes)
+    print(f"1/tau0 {1 / TAU:.2e}, Gamma {gamma:.2e}, Gamma_1 {gamma1:.2e}: tau_tr / tau_qp = {tau_tr * (1 / TAU + gamma):.3f}")
+    fields = np.array([0.0, 0.1, 1.0, 10.0, -1.0]) * mass / (E * tau_tr)
+    expected = an.drude_circle(fields, density=an.circle_density(K_F, D), mass=mass, tau=tau_tr)
+    errors = {}
+    for n in (128, 256, 512):
+        actual = bz.conductivity(gen.circle(n, k_fermi=K_F, mass=mass, tau=TAU), fields, layer_spacing=D,
+                                 scattering_kernel=lobe_kernel(lobes))
+        errors[n] = np.max(np.abs(tensor(actual) - expected)) / np.max(np.abs(expected))
+    slope = np.polyfit(np.log(list(errors)), np.log(list(errors.values())), 1)[0]
+    print(f"K22: errors {', '.join(f'{e:.1e}' for e in errors.values())}; slope {slope:.2f}")
+    assert errors[512] <= 1e-4 and -2.1 <= slope <= -1.9
+
+
+@pytest.mark.parametrize("tau0", [TAU, np.inf])
+def test_k23_flat_sheets_with_scattering_within_and_between_them(tau0):
+    """K23: two flat sheets. The current mode is uniform on each sheet and opposite between them,
+    so scattering within a sheet (even modulated along it) does nothing, and scattering between
+    them relaxes it twice: σ_xx = 2g_s e²τ_tr v₀G/(4π²ħd) with 1/τ_tr = 1/τ₀ + 2N_s A_opp, at
+    every field; everything else is 0. Exact on the nodes (1e-12)."""
+    k0, v0, g = 5e9, 2e5, 2 * np.pi / 3.87e-10
+    a_same, a_opp = 4e-33, 1.5e-33
+
+    def kernel(kx, ky, kx2, ky2):
+        return np.where(np.sign(kx) == np.sign(kx2), a_same * (1 + np.cos(2 * np.pi / g * (ky - ky2))), a_opp)
+
+    fields = np.array([0.0, 1.0, 1e3, -1e3])
+    sheets = gen.open_sheets(256, k0=k0, velocity=v0, tau=tau0, period=g)
+    actual = tensor(bz.conductivity(sheets, fields, layer_spacing=D, period=(0.0, g), scattering_kernel=kernel))
+    expected = an.flat_sheets_collisions(fields, velocity=v0, period=g, layer_spacing=D, tau0=tau0, inter=a_opp)
+    error = np.max(np.abs(actual - expected)) / np.max(np.abs(expected))
+    print(f"K23 tau0 = {tau0}: max |sigma - expected| / sigma_xx = {error:.1e}")
+    assert error <= 1e-12
+
+
+K24_BAND = dict(velocity=1e5, lattice_constant=7.3e-10, hoppings={1: 0.02 * E, 2: 0.006 * E, 3: 0.002 * E})
+K24_K0, K24_TZ = 4e9, 0.002 * E
+K24_INTRA, K24_INTER = (3e-33, 4.0), (2e-33, 6.0)
+
+
+def k24_frames(n, three_d):
+    a, v0, t = K24_BAND["lattice_constant"], K24_BAND["velocity"], K24_BAND["hoppings"]
+
+    def warp(kx):
+        return sum(2 * tn * np.cos(n_ * kx * a) for n_, tn in t.items())
+
+    def slope(kx):
+        return sum(2 * tn * n_ * a * np.sin(n_ * kx * a) for n_, tn in t.items())
+
+    if three_d:
+        return gen.open_sheets_from_dispersion(
+            n, energy=lambda kx, ky, kz: HBAR * v0 * (np.abs(ky) - K24_K0) - warp(kx) - 2 * K24_TZ * np.cos(kz * D),
+            gradient=lambda kx, ky, kz: (slope(kx), HBAR * v0 * np.sign(ky), 2 * K24_TZ * D * np.sin(kz * D) + 0 * kx),
+            period=(2 * np.pi / a, 0.0), across=(-2 * K24_K0, 2 * K24_K0), tau=TAU, n_kz=6, layer_spacing=D)
+    return gen.open_sheets_from_dispersion(
+        n, energy=lambda kx, ky: HBAR * v0 * (np.abs(ky) - K24_K0) - warp(kx),
+        gradient=lambda kx, ky: (slope(kx), HBAR * v0 * np.sign(ky)),
+        period=(2 * np.pi / a, 0.0), across=(-2 * K24_K0, 2 * K24_K0), tau=TAU)
+
+
+def k24_kernel(kx, ky, *rest):
+    kx2, ky2 = (rest[1], rest[2]) if len(rest) == 4 else (rest[0], rest[1])  # rest is (kz, kx2, ky2, kz2) in 3D
+    cosine = np.cos((kx - kx2) * K24_BAND["lattice_constant"])
+    return np.where(np.sign(ky) == np.sign(ky2), K24_INTRA[0] * np.exp(K24_INTRA[1] * (cosine - 1)),
+                    K24_INTER[0] * np.exp(K24_INTER[1] * (-cosine - 1)))
+
+
+@pytest.mark.parametrize("three_d", [False, pytest.param(True, marks=pytest.mark.slow)], ids=["2D", "3D"])
+def test_k24_warped_sheets_with_scattering_within_and_between_them(three_d):
+    """K24: the K20 band with kernels within a sheet (forward) and between the sheets (peaked at
+    Δk_x = π/a). The density of states is uniform in k_x, so each harmonic of v_x decouples;
+    the sheets move in opposite directions and the kernel between them couples each harmonic
+    across the pair (the closed form of §7.1). N = 512: σ_xx, σ_yy (and σ_zz) to 1e-4, 1e-7
+    with `extrapolate`; off-diagonal components ≤ 1e-6 of √(σ_xx σ_yy)."""
+    total = 1 / TAU + 1e13
+    per_tesla = E * K24_BAND["velocity"] * K24_BAND["lattice_constant"] / HBAR
+    fields = np.array([0.0, 0.3, 3.0, -3.0]) * total / per_tesla
+    sheets, period = k24_frames(512, three_d)
+    options = dict(layer_spacing=D, period=period, scattering_kernel=k24_kernel, kz="kz" if three_d else None)
+    expected = an.warped_sheets_collisions(fields, **K24_BAND, layer_spacing=D, tau0=TAU, intra=K24_INTRA,
+                                           inter=K24_INTER, interlayer_hopping=K24_TZ if three_d else None)
+    dim = expected.shape[1]
+    for extrapolate, tolerance in [(False, 1e-4), (True, 1e-7)]:
+        s = bz.conductivity(sheets, fields, extrapolate=extrapolate, **options).iloc[:, 1:].to_numpy().reshape(-1, dim, dim)
+        diagonal = np.diagonal(s, axis1=1, axis2=2)
+        error = np.max(np.abs(diagonal / np.diagonal(expected, axis1=1, axis2=2) - 1))
+        off = np.max(np.abs(s - np.einsum("bi,ij->bij", diagonal, np.eye(dim)))) / np.sqrt(expected[0, 0, 0] * expected[0, 1, 1])
+        print(f"K24 {'3D' if three_d else '2D'} extrapolate={extrapolate}: diagonal {error:.1e}, off-diagonal {off:.1e}")
+        assert error <= tolerance and off <= 1e-6
+
+
+def test_k25_high_field_hall_conductivity_with_scattering_between_pockets():
+    """K25: at high field the leading 1/B term of σ is set by the real-space orbits alone, not
+    by the collision operator, so B·σ_H → e(n_h − n_e) survives a kernel that moves carriers
+    between pockets (the three K19 pockets, N = 512, at ω_cτ ≳ 10³ with the total rates).
+    Tolerance 1e-3."""
+    a = 3.87e-10
+    hole = gen.tight_binding(N, tau=lambda p: sc.hot_spot(p, TAU, strength=4.0, width=0.2), lattice_constant=a,
+                             hopping=0.25 * E, next_hopping=-0.0625 * E, third_hopping=0.02 * E,
+                             chemical_potential=0.0, center=(np.pi / a, np.pi / a))
+    electrons = [gen.polar(N, k_fermi=lambda p: 5e9 * (1 - 0.05 * np.cos(4 * p)), mass=M,
+                           tau=lambda p: sc.cos4phi(p, TAU, anisotropy=0.5)),
+                 gen.circle(N, k_fermi=3e9, mass=2 * M, tau=2 * TAU)]
+    pockets = [hole, *electrons]
+
+    def coupling(kx, ky, kx2, ky2):
+        return 2e-33 * np.exp(-((kx - kx2) ** 2 + (ky - ky2) ** 2) / (2 * 6e9**2)) + 5e-34
+
+    rates = bz.out_scattering_rate(pockets, coupling, layer_spacing=D)
+    total = [df.assign(tau=1 / (1 / df.tau + rate)) for df, rate in zip(pockets, rates)]
+    field = 1e3 / min(orbit_x(df, 1.0) for df in total)
+    s = bz.conductivity(pockets, field, layer_spacing=D, scattering_kernel=coupling)
+    hall = 0.5 * (s.sigma_xy.iloc[0] - s.sigma_yx.iloc[0]) * field
+    n_h = bz.carrier_density(hole, layer_spacing=D)
+    n_e = sum(bz.carrier_density(df, layer_spacing=D) for df in electrons)
+    assert print_check("K25 B sigma_H = e(n_h - n_e)", E * (n_h - n_e), hall) < 1e-3
+
+
+def test_k26_ong_area_of_the_vector_mean_free_path():
+    """K26: with a kernel, the weak-field Hall conductivity is the Ong area of the vector mean
+    free path L (the B = 0 solution with in-scattering): ½(σ_xy − σ_yx)/B → −(g_s e³/4π²ħ²d)·A_L,
+    with A_L traced along the motion, and σ(0) = g_s e² ∫dμ v⊗L. L comes from the spectral
+    reference, independently of the node solver. Lopsided pocket with hot-spot background
+    scattering and a hot-spot kernel, N = 1024, x̄ = 1e-4. Tolerance 1e-4."""
+    frames, contour, _ = POCKETS["lopsided"]
+    paths, directions = ref.collision_mean_free_path([contour], kernel=hot_kernel, layer_spacing=D, points=1024)
+    area = an.ong_area(paths[0], directions[0])
+    predicted = -2 * E**3 / (4 * np.pi**2 * HBAR**2 * D) * area
+    zero = ref.collision_sigma([contour], [0.0], kernel=hot_kernel, layer_spacing=D, points=1024)[0]
+    field = 1e-4 * M / (E * TAU)
+    s = tensor(bz.conductivity(frames(1024), [0.0, field], layer_spacing=D, scattering_kernel=hot_kernel))
+    slope = 0.5 * (s[1, 0, 1] - s[1, 1, 0]) / field
+    assert print_check("K26 Hall slope = -prefactor A_L", predicted, slope) < 1e-4
+    assert print_check("K26 sigma(0) = g_s e^2 int dmu v L", zero, s[0]) < 1e-4

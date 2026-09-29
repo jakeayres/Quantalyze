@@ -17,13 +17,13 @@ extrapolation (4σ_N − σ_{N/2})/3, which cancels the O(N⁻²) discretisation
 from __future__ import annotations
 
 import warnings
-from typing import List, Optional, Sequence, Union
+from typing import Callable, List, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
 
 from ...core.constants import ELEMENTARY_CHARGE, HBAR
-from . import _kernel, _kernel_py
+from . import _collisions, _kernel, _kernel_py
 from ._contour import MIN_NODES, PreparedContour, enclosed_area, prepare_contour
 
 _BACKENDS = ("python", "numba")
@@ -243,8 +243,8 @@ def _periods(period, n_frames: int) -> list:
     return items
 
 
-def _kz_slices(frame: pd.DataFrame, kz: str, layer_spacing: float) -> list:
-    """The rows of each k_z slice, checking the slices evenly cover one period 2π/d."""
+def _kz_positions(frame: pd.DataFrame, kz: str, layer_spacing: float) -> list:
+    """(k_z, row positions) of each k_z slice, checking the slices evenly cover one period 2π/d."""
     values = np.unique(frame[kz].to_numpy(dtype=np.float64))
     if values.size > 1:
         spacing = 2 * np.pi / (layer_spacing * values.size)
@@ -255,7 +255,45 @@ def _kz_slices(frame: pd.DataFrame, kz: str, layer_spacing: float) -> list:
                 f"{np.diff(values).max():.6e} m⁻¹ apart"
             )
     column = frame[kz].to_numpy()
-    return [frame[column == value] for value in values]
+    return [(float(value), np.flatnonzero(column == value)) for value in values]
+
+
+def _kz_slices(frame: pd.DataFrame, kz: str, layer_spacing: float) -> list:
+    """The rows of each k_z slice, checking the slices evenly cover one period 2π/d."""
+    return [frame.iloc[positions] for _, positions in _kz_positions(frame, kz, layer_spacing)]
+
+
+def _contour_inputs(frames, periods, layer_spacing, columns, tau, kz, vz):
+    """One `ContourInput` per contour (per k_z slice with `kz`), and (frame, row positions) of each.
+
+    `tau` is a column name or a number (np.inf allowed); `vz` a column name or None.
+    """
+    kx, ky, vx, vy = columns
+    inputs, rows = [], []
+    for number, (frame, frame_period) in enumerate(zip(frames, periods)):
+        if kz is None:
+            parts = [(None, np.arange(len(frame)))]
+        else:
+            parts = _kz_positions(frame, kz, layer_spacing)
+        for kz_value, positions in parts:
+            part = frame.iloc[positions]
+            tau_values = (part[tau].to_numpy(dtype=np.float64) if isinstance(tau, str)
+                          else np.full(len(part), float(tau)))
+            inputs.append(_collisions.ContourInput(
+                *(part[c].to_numpy(dtype=np.float64) for c in (kx, ky, vx, vy)), tau0=tau_values,
+                period=frame_period, vz=None if vz is None or kz is None else part[vz].to_numpy(dtype=np.float64),
+                kz=kz_value, weight=1.0 / len(parts)))
+            rows.append((number, positions))
+    return inputs, rows
+
+
+def _per_frame(frames, rows, values, width=None):
+    """Values per contour, placed back into one array per frame (in the frame's row order)."""
+    shape = (lambda n: (n,)) if width is None else (lambda n: (n, width))
+    out = [np.empty(shape(len(frame))) for frame in frames]
+    for (number, positions), value in zip(rows, values):
+        out[number][positions] = value
+    return out
 
 
 def conductivity(
@@ -277,6 +315,7 @@ def conductivity(
     period=None,
     backend: str = "numba",
     extrapolate: bool = False,
+    scattering_kernel: Optional[Callable] = None,
 ) -> pd.DataFrame:
     """Magnetoconductivity tensor of one or more Fermi pockets (S/m).
 
@@ -291,6 +330,16 @@ def conductivity(
     A Fermi surface warped along k_z is given as slices: pass `kz`, and each distinct
     k_z value is one contour (with B ∥ ẑ, k_z is constant on every orbit). The slices
     must be evenly spaced over one period 2π/d, and the result is the full 3×3 tensor.
+
+    With `scattering_kernel`, scattering is no longer a relaxation time alone: carriers
+    scattered from k arrive near k′ and carry current there too (the in-scattering, or
+    current vertex correction, that a relaxation time leaves out). The full linearised
+    Boltzmann equation is then solved on every contour at once, still exactly in ω_cτ.
+    `tau` becomes the background relaxation time τ₀ (a pure relaxation, and np.inf for
+    none), and the kernel adds the out-scattering rate Γ(k) = ∫dμ′ P(k, k′) to it. Because
+    the kernel couples the contours, σ is no longer a sum over pockets. The cost grows as
+    the cube of the number of nodes the kernel couples (about 0.4 s per field for 2048
+    nodes on a laptop).
 
     Args:
         dfs: One contour DataFrame, or a list of them (one per pocket).
@@ -325,6 +374,18 @@ def conductivity(
             contour smoothly (as the generators do). Costs 1.5×. Every contour (every k_z
             slice) needs an even number of nodes, at least 32. Not for noisy or irregular
             nodes (measured contours), whose error does not fall as N⁻².
+        scattering_kernel: P(k, k′) (J·m³/s): the rate for scattering from k into states near
+            k′, per unit density of states per spin, per unit volume, so that the
+            out-scattering rate is Γ(k) = ∫dμ(k′) P(k, k′) with dμ the density of states per
+            spin per volume (`out_scattering_rate` and `density_of_states` help calibrate
+            it). A function P(kx, ky, kx2, ky2), or P(kx, ky, kz, kx2, ky2, kz2) with `kz`,
+            vectorised with broadcasting (it is called with a block of k against every k′).
+            It must be finite, non-negative, symmetric under k ↔ k′ (detailed balance) and
+            periodic in the reciprocal lattice; `bz.scattering.spin_fluctuation_kernel`
+            builds one. Where the kernel conserves particles with no background, the
+            contours must form the whole Fermi surface (both open sheets, every k_z slice).
+            With a kernel, `backend` makes no difference and `symmetrize` only switches the
+            runtime Onsager check.
 
     Returns:
         DataFrame with columns field (T) and sigma_xx, sigma_xy, sigma_yx, sigma_yy (S/m);
@@ -346,6 +407,18 @@ def conductivity(
     fields = np.atleast_1d(np.asarray(field, dtype=np.float64))  # (nB,)
     periods = _periods(period, len(frames))
     dim = 2 if kz is None else 3
+    if scattering_kernel is not None:
+        if backend not in _BACKENDS:
+            raise ValueError(f"backend must be one of {_BACKENDS}, not {backend!r}")
+        if not np.all(np.isfinite(fields)):
+            raise ValueError("field must be finite")
+        inputs, _ = _contour_inputs(frames, periods, layer_spacing, (kx, ky, vx, vy), tau, kz, vz)
+        total = _collisions.conductivity(
+            inputs, fields, kernel=scattering_kernel, layer_spacing=layer_spacing, charge=charge,
+            spin_degeneracy=spin_degeneracy, remove_drift=remove_drift, symmetrize=symmetrize, extrapolate=extrapolate,
+            relaxation_time=lambda contour, b: _orbit_tensor(contour, b, symmetrize, backend))
+        return pd.DataFrame(np.column_stack([fields, total.reshape(fields.size, dim * dim)]),
+                            columns=["field", *_columns("sigma", dim)])
     options = dict(layer_spacing=layer_spacing, charge=charge, spin_degeneracy=spin_degeneracy,
                    symmetrize=symmetrize, remove_drift=remove_drift, backend=backend, extrapolate=extrapolate)
     total = np.zeros((fields.size, dim, dim))
@@ -501,3 +574,159 @@ def carrier_density(
         contour = prepare_contour(part[kx], part[ky], part[vx], part[vy], 1.0)  # validates; τ plays no part
         areas.append(enclosed_area(contour.kx, contour.ky, contour.vx, contour.vy))
     return spin_degeneracy * float(np.mean(areas)) / (4 * np.pi**2 * layer_spacing)
+
+
+def density_of_states(
+    dfs: Union[pd.DataFrame, List[pd.DataFrame]],
+    *,
+    layer_spacing: float,
+    kx: str = "kx",
+    ky: str = "ky",
+    vx: str = "vx",
+    vy: str = "vy",
+    kz: Optional[str] = None,
+    period=None,
+) -> float:
+    """Density of states at the Fermi level of one or more contours, per spin (J⁻¹ m⁻³).
+
+    N(E_F) = ∫ dS / ((2π)³ ħ|v|) over the Fermi surface, summed over the contours (and
+    averaged over k_z slices), with the same node weights the scattering-kernel solver
+    uses. For a circle it is m/(2πħ²d). It calibrates kernels: an isotropic kernel with
+    out-scattering rate Γ is P = Γ / N(E_F). It is per spin, so the electronic specific
+    heat coefficient is γ = (π²/3) k_B² g_s N(E_F).
+
+    Args:
+        dfs: One contour DataFrame, or a list of them.
+        layer_spacing: Interlayer spacing d (m).
+        kx: Column of wavevectors k_x (m⁻¹).
+        ky: Column of wavevectors k_y (m⁻¹).
+        vx: Column of group velocities v_x (m/s).
+        vy: Column of group velocities v_y (m/s).
+        kz: Column of wavevectors k_z (m⁻¹) for a k_z-warped surface given as slices.
+        period: For open sheets, (G_x, G_y) (m⁻¹), or a list aligned with `dfs`, as in
+            `conductivity`.
+
+    Returns:
+        The density of states per spin per volume (J⁻¹ m⁻³).
+
+    Examples:
+        >>> from quantalyze.beta import boltzmann as bz
+        >>> from quantalyze.core.constants import ELECTRON_MASS
+        >>> df = bz.generators.circle(512, k_fermi=7e9, mass=ELECTRON_MASS, tau=1e-13)
+        >>> dos = bz.density_of_states(df, layer_spacing=1e-9)  # ≈ m/(2πħ²d)
+    """
+    frames = [dfs] if isinstance(dfs, pd.DataFrame) else list(dfs)
+    inputs, _ = _contour_inputs(frames, _periods(period, len(frames)), layer_spacing, (kx, ky, vx, vy), 1.0, kz, None)
+    return _collisions.density_of_states(inputs, layer_spacing=layer_spacing, charge=-ELEMENTARY_CHARGE)
+
+
+def out_scattering_rate(
+    dfs: Union[pd.DataFrame, List[pd.DataFrame]],
+    scattering_kernel: Callable,
+    *,
+    layer_spacing: float,
+    kx: str = "kx",
+    ky: str = "ky",
+    vx: str = "vx",
+    vy: str = "vy",
+    kz: Optional[str] = None,
+    period=None,
+) -> Union[pd.Series, List[pd.Series]]:
+    """The out-scattering rate Γ(k) = ∫dμ(k′) P(k, k′) of a scattering kernel at every node (s⁻¹).
+
+    It uses exactly the node weights of `conductivity`, so scaling a kernel to a target
+    rate with it is consistent (for example to ħΓ = 5 meV at a hot spot). Give every
+    contour the kernel couples: Γ integrates over all of them.
+
+    Args:
+        dfs: One contour DataFrame, or a list of them.
+        scattering_kernel: P(k, k′) (J·m³/s), as in `conductivity`.
+        layer_spacing: Interlayer spacing d (m).
+        kx: Column of wavevectors k_x (m⁻¹).
+        ky: Column of wavevectors k_y (m⁻¹).
+        vx: Column of group velocities v_x (m/s).
+        vy: Column of group velocities v_y (m/s).
+        kz: Column of wavevectors k_z (m⁻¹) for a k_z-warped surface given as slices.
+        period: For open sheets, (G_x, G_y) (m⁻¹), or a list aligned with `dfs`.
+
+    Returns:
+        A Series named "out_scattering_rate" aligned with the DataFrame's index, or a list
+        of them for a list of DataFrames.
+
+    Examples:
+        >>> from quantalyze.beta import boltzmann as bz
+        >>> from quantalyze.core.constants import ELECTRON_MASS
+        >>> df = bz.generators.circle(256, k_fermi=7e9, mass=ELECTRON_MASS, tau=1e-13)
+        >>> rate = bz.out_scattering_rate(df, lambda *k: 1e-33, layer_spacing=1e-9)
+    """
+    frames = [dfs] if isinstance(dfs, pd.DataFrame) else list(dfs)
+    inputs, rows = _contour_inputs(frames, _periods(period, len(frames)), layer_spacing, (kx, ky, vx, vy), 1.0, kz,
+                                   None)
+    rates = _collisions.out_scattering_rates(inputs, scattering_kernel, layer_spacing=layer_spacing,
+                                             charge=-ELEMENTARY_CHARGE)
+    series = [pd.Series(values, index=frame.index, name="out_scattering_rate")
+              for values, frame in zip(_per_frame(frames, rows, rates), frames)]
+    return series[0] if isinstance(dfs, pd.DataFrame) else series
+
+
+def mean_free_path(
+    dfs: Union[pd.DataFrame, List[pd.DataFrame]],
+    *,
+    layer_spacing: float,
+    kx: str = "kx",
+    ky: str = "ky",
+    vx: str = "vx",
+    vy: str = "vy",
+    tau: Union[str, float] = "tau",
+    kz: Optional[str] = None,
+    vz: str = "vz",
+    scattering_kernel: Optional[Callable] = None,
+    remove_drift: Optional[bool] = None,
+    period=None,
+    charge: float = -ELEMENTARY_CHARGE,
+) -> Union[pd.DataFrame, List[pd.DataFrame]]:
+    """The vector mean free path L at zero field at every node (m).
+
+    In the relaxation-time approximation L = vτ. With a scattering kernel it solves
+    L = vτ + τ ∫dμ(k′) P(k, k′) L(k′): the in-scattering lengthens L where scattering is
+    forward and shortens or rotates it where carriers are sent across the Fermi surface.
+    σ(0) = g_s e² ∫dμ v ⊗ L, and the weak-field Hall conductivity is set by the area L
+    sweeps out around the Fermi surface (Ong's construction). Where the kernel conserves
+    particles with no background, L is defined up to a constant; the one returned has
+    zero mean, which changes no conductivity.
+
+    Args:
+        dfs: One contour DataFrame, or a list of them.
+        layer_spacing: Interlayer spacing d (m).
+        kx: Column of wavevectors k_x (m⁻¹).
+        ky: Column of wavevectors k_y (m⁻¹).
+        vx: Column of group velocities v_x (m/s).
+        vy: Column of group velocities v_y (m/s).
+        tau: Column of relaxation times (s), or one value; with a kernel, the background τ₀.
+        kz: Column of wavevectors k_z (m⁻¹) for a k_z-warped surface given as slices.
+        vz: Column of group velocities v_z (m/s), used with `kz`.
+        scattering_kernel: P(k, k′) (J·m³/s), as in `conductivity`, or None.
+        remove_drift: As in `conductivity`.
+        period: For open sheets, (G_x, G_y) (m⁻¹), or a list aligned with `dfs`.
+        charge: Carrier charge q (C).
+
+    Returns:
+        A DataFrame with columns lx, ly (and lz with `kz`) (m) aligned with the input's
+        index, or a list of them for a list of DataFrames.
+
+    Examples:
+        >>> from quantalyze.beta import boltzmann as bz
+        >>> from quantalyze.core.constants import ELECTRON_MASS
+        >>> df = bz.generators.circle(256, k_fermi=7e9, mass=ELECTRON_MASS, tau=1e-13)
+        >>> ell = bz.mean_free_path(df, layer_spacing=1e-9)  # v τ
+    """
+    frames = [dfs] if isinstance(dfs, pd.DataFrame) else list(dfs)
+    inputs, rows = _contour_inputs(frames, _periods(period, len(frames)), layer_spacing, (kx, ky, vx, vy), tau, kz, vz)
+    kernel = scattering_kernel if scattering_kernel is not None else (lambda *k: 0.0)
+    paths = _collisions.mean_free_paths(inputs, kernel, layer_spacing=layer_spacing, charge=charge,
+                                        remove_drift=remove_drift)
+    width = paths[0].shape[1]
+    columns = ["lx", "ly", "lz"][:width]
+    frames_out = [pd.DataFrame(values, index=frame.index, columns=columns)
+                  for values, frame in zip(_per_frame(frames, rows, paths, width), frames)]
+    return frames_out[0] if isinstance(dfs, pd.DataFrame) else frames_out
