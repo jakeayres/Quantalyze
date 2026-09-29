@@ -3,7 +3,9 @@
 Two kinds of generator:
 
 - **From your own band:** `from_dispersion` traces the pocket ε(k) = 0 of any
-  dispersion you supply, and `polar` builds a pocket of any shape from k_F(φ).
+  dispersion you supply, `open_sheets_from_dispersion` traces open Fermi sheets
+  (one period of each, ready for `period=`), and `polar` builds a pocket of any
+  shape from k_F(φ).
 - **Analytic test pockets:** `circle`, `ellipse`, `tight_binding` and
   `open_sheets`, whose exact answers are known.
 
@@ -14,7 +16,8 @@ in counter-clockwise order of the polar angle about the pocket centre.
 
 `tau` may be a float, or a function of the polar angle φ (rad) of each node
 about the pocket centre, such as the models in
-`quantalyze.beta.boltzmann.scattering`.
+`quantalyze.beta.boltzmann.scattering`. Open sheets have no centre, so
+`open_sheets_from_dispersion` takes a function of k instead.
 
 Examples:
     >>> from quantalyze.beta import boltzmann as bz
@@ -36,6 +39,8 @@ Tau = Union[float, Callable[[np.ndarray], np.ndarray]]
 
 # Samples along each ray that check it crosses the Fermi surface once and bracket the crossing.
 _RAY_SAMPLES = 64
+# Samples along each line across open sheets: finer, since one line crosses several sheets.
+_LINE_SAMPLES = 256
 
 _CARRIER_SIGN = {"electron": 1.0, "hole": -1.0}
 
@@ -325,9 +330,17 @@ def _ray_crossings(energy, gradient, phi, reach, centre, energy_centre) -> np.nd
     lower = last[rays, after - 1]  # last non-zero sample before it
     lo, hi = radii[rays, lower], radii[rays, after]
     f_lo = values[rays, lower]
-    tolerance = 1e-15 * reach
-    # Safeguarded Newton ("rtsafe"): bisect whenever the Newton step leaves [lo, hi] or
-    # would shrink the bracket less than halving it did two steps ago.
+    return _refine(energy, gradient, cx, cy, ux, uy, lo, hi, f_lo, 1e-15 * reach)
+
+
+def _refine(energy, gradient, cx, cy, ux, uy, lo, hi, f_lo, tolerance) -> np.ndarray:
+    """The distance r along k = c + r û at which ε = 0, given brackets [lo, hi] (m⁻¹).
+
+    All crossings are refined at once, by safeguarded Newton steps ("rtsafe"): dε/dr = ∇ε·û
+    from the supplied gradient, with a bisection whenever the Newton step leaves [lo, hi] or
+    would shrink the bracket less than halving it did two steps ago. The tolerance is
+    scipy's brentq's: `tolerance` plus 4 ulp of r.
+    """
     step_before = hi - lo
     step = step_before.copy()
     r = 0.5 * (lo + hi)
@@ -350,6 +363,57 @@ def _ray_crossings(energy, gradient, phi, reach, centre, energy_centre) -> np.nd
         if np.all(converged):
             return r
     raise RuntimeError("root-finding along the rays did not converge")  # bisection alone takes ~60 steps
+
+
+def _sign_crossings(values):
+    """Where the sign of each row changes, ignoring samples exactly on ε = 0: returns the
+    change mask, shape (rows, S − 1), and the index of the last non-zero sample so far."""
+    signs = np.sign(values)
+    columns = np.arange(values.shape[1])
+    first = np.argmax(signs != 0, axis=1)  # leading zeros take the first non-zero sign
+    last = np.maximum.accumulate(np.where(signs != 0, columns, 0), axis=1)
+    last = np.maximum(last, first[:, None])
+    filled = np.take_along_axis(signs, last, axis=1)
+    return filled[:, 1:] != filled[:, :-1], last
+
+
+def _line_crossings(energy, gradient, starts_x, starts_y, nx, ny, across):
+    """Every crossing of ε = 0 on each line k = start + r n̂, r ∈ `across` (m⁻¹).
+
+    Returns the distances r, shape (lines, sheets), in increasing order along each line.
+    Every line must cross the same number of times (at least once).
+    """
+    lo_r, hi_r = across
+    n_lines = starts_x.size
+    radii = np.linspace(lo_r, hi_r, _LINE_SAMPLES + 1)  # (S,)
+    grid_x = starts_x[:, None] + radii[None, :] * nx
+    grid_y = starts_y[:, None] + radii[None, :] * ny
+    values = np.asarray(energy(grid_x.ravel(), grid_y.ravel()), dtype=np.float64).reshape(grid_x.shape)
+    bad = np.flatnonzero(~np.all(np.isfinite(values), axis=1))
+    if bad.size:
+        raise ValueError(f"energy is not finite on the line through k = ({starts_x[bad[0]]:.4e}, "
+                         f"{starts_y[bad[0]]:.4e}) m⁻¹, within `across`")
+    if np.any(np.all(values == 0, axis=1)):
+        raise ValueError("energy is zero all along a line: the Fermi level lies on a flat band")
+    changes, last = _sign_crossings(values)
+    counts = np.count_nonzero(changes, axis=1)
+    if counts.min() == 0:
+        raise ValueError("some lines across the sheets do not cross the Fermi surface within `across`: "
+                         "widen `across`, or check the band and chemical potential")
+    if counts.min() != counts.max():
+        raise ValueError(
+            f"the number of Fermi crossings changes along the period (from {counts.min()} to {counts.max()}): "
+            "the surface is not a set of open sheets across this range (a closed pocket, sheets that "
+            "touch, or `across` cutting through a sheet). Narrow `across` to the sheets you want"
+        )
+    n_sheets = counts[0]
+    lines, samples = np.nonzero(changes)  # row-major: each line's crossings in order, (lines·sheets,)
+    after = samples + 1
+    lower = last[lines, samples]
+    starts_x, starts_y = starts_x[lines], starts_y[lines]
+    r = _refine(energy, gradient, starts_x, starts_y, nx, ny, radii[lower], radii[after],
+                values[lines, lower], np.full(lines.size, 1e-15 * (hi_r - lo_r)))
+    return r.reshape(n_lines, n_sheets)
 
 
 def from_dispersion_3d(
@@ -413,6 +477,128 @@ def from_dispersion_3d(
         part.insert(5, "vz", grad_z / HBAR)
         slices.append(part)
     return pd.concat(slices, ignore_index=True)
+
+
+def open_sheets_from_dispersion(
+    n_points: int,
+    *,
+    energy: Callable[..., np.ndarray],
+    gradient: Callable[..., Tuple[np.ndarray, ...]],
+    period: Sequence[float],
+    across: Sequence[float],
+    tau: Union[float, Callable[..., np.ndarray]],
+    n_kz: Optional[int] = None,
+    layer_spacing: Optional[float] = None,
+) -> Tuple[list, Tuple[float, float]]:
+    """Open Fermi sheets of any band ε(k): one period of each, ready for `conductivity`.
+
+    The sheets run along the reciprocal-lattice vector G = `period`. The function steps
+    along one period, k_∥ = −|G|/2 … |G|/2 in N even steps, and on each line across the
+    sheets (along n̂, G turned by +90°) finds every crossing of ε = 0 with
+    r = k·n̂ in `across`. The first crossing on every line belongs to sheet 1, the second
+    to sheet 2, and so on (ordered along n̂). The velocity is v = ∇ε/ħ from the supplied
+    gradient, and the crossings are found to the precision of the floating-point numbers.
+
+    With `n_kz`, the same is done on N_z evenly spaced slices k_z = −π/d + 2πj/(N_z d) of
+    a band warped along k_z, and each sheet gets `kz` and `vz` columns: pass
+    `kz="kz"` to `conductivity`.
+
+    Args:
+        n_points: Number of nodes N per period along each sheet (per slice).
+        energy: Function ε(k_x, k_y) (J) measured from the Fermi level, vectorised over
+            NumPy arrays of k_x, k_y (m⁻¹); ε(k_x, k_y, k_z) with `n_kz`.
+        gradient: Function returning (∂ε/∂k_x, ∂ε/∂k_y) (J·m); with `n_kz`, also ∂ε/∂k_z.
+        period: Reciprocal-lattice vector (G_x, G_y) (m⁻¹) along which the sheets repeat,
+            e.g. (2π/a, 0) for sheets running along k_x.
+        across: Range (r_min, r_max) (m⁻¹) of k·n̂ to search across the sheets, n̂ being G
+            turned by +90° (for G along +k_x, n̂ is +k_y). Every line must cross the Fermi
+            surface the same number of times within it.
+        tau: Relaxation time (s): a float, or a function τ(k_x, k_y) of arrays (m⁻¹),
+            τ(k_x, k_y, k_z) with `n_kz`.
+        n_kz: Number of k_z slices N_z, for a band warped along k_z; None for a 2D band.
+        layer_spacing: Interlayer spacing d (m), which sets the k_z period 2π/d. Required
+            with `n_kz`.
+
+    Returns:
+        (sheets, period): a list with one DataFrame per sheet (columns kx, ky, vx, vy, tau;
+        kx, ky, kz, vx, vy, vz, tau with `n_kz`), and the period (G_x, G_y) to pass to
+        `conductivity`.
+
+    Raises:
+        ValueError: If a line does not cross the Fermi surface, the number of crossings
+            changes along the period or between slices, the sheets do not repeat after
+            `period`, the energy is not finite within `across`, or the arguments are
+            inconsistent.
+
+    Examples:
+        Quasi-one-dimensional chains along y: two sheets near k_y = ±π/2b that run along k_x.
+
+        >>> import numpy as np
+        >>> from quantalyze.beta import boltzmann as bz
+        >>> a = b = 4e-10
+        >>> ta, tb = bz.units.ev_to_joule(0.02), bz.units.ev_to_joule(0.25)
+        >>> sheets, period = bz.generators.open_sheets_from_dispersion(
+        ...     256, period=(2 * np.pi / a, 0.0), across=(-np.pi / b, np.pi / b), tau=1e-13,
+        ...     energy=lambda kx, ky: -2 * ta * np.cos(kx * a) - 2 * tb * np.cos(ky * b),
+        ...     gradient=lambda kx, ky: (2 * ta * a * np.sin(kx * a), 2 * tb * b * np.sin(ky * b)))
+        >>> sigma = bz.conductivity(sheets, [0.0, 10.0], layer_spacing=1e-9, period=period)
+    """
+    g = np.asarray(period, dtype=np.float64)
+    if g.shape != (2,) or not np.all(np.isfinite(g)) or not np.any(g):
+        raise ValueError(f"period must be a finite, non-zero pair (G_x, G_y), not {period!r}")
+    lo_r, hi_r = (float(v) for v in across)
+    if not (np.isfinite(lo_r) and np.isfinite(hi_r) and hi_r > lo_r):
+        raise ValueError(f"across must be a finite range (r_min, r_max) with r_max > r_min, not {across!r}")
+    if n_kz is not None and layer_spacing is None:
+        raise ValueError("layer_spacing is required with n_kz: it sets the k_z period 2π/d")
+    length = float(np.hypot(*g))
+    ux, uy = g / length  # along the sheets
+    nx, ny = -uy, ux  # across them
+    along = length * (np.arange(n_points) / n_points - 0.5)  # (N,)
+    starts_x, starts_y = along * ux, along * uy
+
+    def build(energy2, gradient2, kz=None):
+        r = _line_crossings(energy2, gradient2, starts_x, starts_y, nx, ny, (lo_r, hi_r))  # (N, sheets)
+        # The line one period on must cross where line j does. j is generic: at the ends of the
+        # period an inversion-symmetric band would match whatever G is.
+        j = int(0.382 * n_points)
+        try:
+            shifted = _line_crossings(energy2, gradient2, starts_x[j:j + 1] + g[0], starts_y[j:j + 1] + g[1],
+                                      nx, ny, (lo_r, hi_r))
+        except ValueError:
+            shifted = None
+        if shifted is None or shifted.shape[1] != r.shape[1] or np.max(np.abs(shifted[0] - r[j])) > 1e-8 * (hi_r - lo_r):
+            raise ValueError("the sheets do not repeat after `period`: pass the reciprocal-lattice vector G "
+                             "with ε(k + G) = ε(k)")
+        frames = []
+        for sheet in range(r.shape[1]):
+            kx, ky = starts_x + r[:, sheet] * nx, starts_y + r[:, sheet] * ny
+            grad = gradient(kx, ky) if kz is None else gradient(kx, ky, kz)
+            if callable(tau):
+                values = tau(kx, ky) if kz is None else tau(kx, ky, np.full(kx.shape, kz))
+            else:
+                values = float(tau)
+            frame = _frame(kx, ky, np.asarray(grad[0]) / HBAR, np.asarray(grad[1]) / HBAR,
+                           np.broadcast_to(np.asarray(values, dtype=np.float64), kx.shape))
+            if kz is not None:
+                frame.insert(2, "kz", kz)
+                frame.insert(5, "vz", np.broadcast_to(np.asarray(grad[2], dtype=np.float64), kx.shape) / HBAR)
+            frames.append(frame)
+        return frames
+
+    if n_kz is None:
+        return build(energy, gradient), (float(g[0]), float(g[1]))
+    per_slice = []
+    for j in range(n_kz):
+        kz = -np.pi / layer_spacing + 2 * np.pi * j / (n_kz * layer_spacing)
+        per_slice.append(build(lambda kx, ky, kz=kz: energy(kx, ky, kz),
+                               lambda kx, ky, kz=kz: gradient(kx, ky, kz)[:2], kz))
+    counts = {len(frames) for frames in per_slice}
+    if len(counts) != 1:
+        raise ValueError(f"the number of sheets changes between k_z slices ({sorted(counts)}): "
+                         "the surface is not a set of open sheets at every k_z")
+    sheets = [pd.concat([frames[i] for frames in per_slice], ignore_index=True) for i in range(len(per_slice[0]))]
+    return sheets, (float(g[0]), float(g[1]))
 
 
 def tight_binding(

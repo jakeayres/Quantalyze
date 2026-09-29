@@ -179,6 +179,43 @@ with field at all, while σ_yy falls as 1/B² at high field and ρ_yy grows with
     - **Drift removal is off for open orbits,** because their drift is physical. Passing
       `remove_drift=True` together with `period` raises an error.
 
+### Open sheets from your own band { #open-sheets-band }
+
+**`bz.generators.open_sheets_from_dispersion` traces the open sheets of any band ε(k).**
+Give the reciprocal-lattice vector G that the sheets repeat along as `period`, and a range
+`across` them to search. It returns one period of each sheet, with v = ∇ε/ħ at every
+node, together with the `period` to pass on to `conductivity`. With `n_kz` it also slices a
+band warped along k_z, as `from_dispersion_3d` does for pockets.
+
+```python
+--8<-- "beta/boltzmann/open_sheets_band.py:example"
+```
+
+```text title="Output"
+--8<-- "beta/boltzmann/open_sheets_band.txt"
+```
+
+![Magnetoresistance growing without limit across the chains, saturating between the layers, and negligible along the chains](../examples/beta/boltzmann/open_sheets_band.png#only-light)
+![Magnetoresistance growing without limit across the chains, saturating between the layers, and negligible along the chains](../examples/beta/boltzmann/open_sheets_band-dark.png#only-dark)
+
+The field along z sweeps carriers along the sheets through k_x. v_x changes sign on the
+way and averages out, so ρ_xx grows without limit: this is the open-orbit
+magnetoresistance. The part of v_z that comes from hopping straight up (t_z) is the
+same all along each orbit and survives any field. As a result ρ_zz saturates, here
+towards (t_d/t_z)² = 1. Along the chains v_y hardly changes, and neither does ρ_yy.
+
+!!! warning "Watch out"
+
+    - **Every line across the sheets must cross the Fermi surface the same number of times
+      within `across`.** A closed pocket in the range, or a range that cuts through a
+      sheet, raises an error. The sheets are numbered in order along n̂, which is G
+      turned by +90°.
+    - **`period` must be a period of the band,** ε(k + G) = ε(k). The function checks
+      this and raises an error if the sheets do not repeat after G.
+    - **`tau` is a function of k here:** τ(k_x, k_y), or τ(k_x, k_y, k_z) with `n_kz`, not
+      of the angle φ that the pocket generators use.
+    - **Only B ∥ z is supported,** as for [warping along k_z](#kz-warping).
+
 ### Warping along k_z { #kz-warping }
 
 A layered metal's Fermi surface is a corrugated cylinder: its cross-section changes
@@ -255,7 +292,8 @@ is already within 3% of that.
 
 - **From your own band:** `from_dispersion` traces ε(k) = 0 for any ε(k) and ∇ε you
   supply (above), `from_dispersion_3d` does the same for a k_z-warped surface, slice by
-  slice, and `polar` builds a pocket of any shape from k_F(φ).
+  slice, `open_sheets_from_dispersion` traces [open sheets](#open-sheets-band), and
+  `polar` builds a pocket of any shape from k_F(φ).
 - **Test shapes with known answers:** `circle`, `ellipse`, `tight_binding` and
   `open_sheets`.
 

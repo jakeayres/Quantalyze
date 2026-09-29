@@ -627,6 +627,49 @@ def test_k19_high_field_hall_conductivity_of_several_pockets(backend):
     assert print_check("K19 B sigma_H = e(n_h - n_e)", E * (n_h - n_e), hall) < 1e-3
 
 
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_k20_warped_open_sheets_from_a_band(backend):
+    """K20: ε = ħv₀(|k_y| − k₀) − Σₙ 2tₙ cos(n k_x a) − 2t_z cos(k_z d) has two open sheets along
+    k_x, traced by `open_sheets_from_dispersion` (N = 512, 6 k_z slices). With B ∥ z, v_y = ±v₀ is
+    constant, so carriers cross k_x at a uniform rate and each harmonic of v_x decays as
+    1/(1 + (nωτ)²), with ω = ev₀aB/ħ:
+    σ_xx(B) = [2g_s e²τa/(πħ³v₀d)] Σₙ (ntₙ)²/(1 + (nωτ)²), σ_yy = g_s e²τv₀/(πħad) and
+    σ_zz = 2g_s e²τt_z²d/(πħ³v₀a). Tolerance 1e-4 (the O(N⁻²) error is 5e-5), 1e-7 with
+    `extrapolate=True`. σ_yy and σ_zz do not depend on B (1e-12), and every off-diagonal
+    component is zero (1e-10 of √(σ_xx σ_yy))."""
+    a, v0, k0 = 7.3e-10, 1e5, 4e9
+    t = {1: 0.02 * E, 2: 0.006 * E, 3: 0.002 * E}
+    tz = 0.002 * E
+
+    def energy(kx, ky, kz):
+        warp = sum(2 * tn * np.cos(n * kx * a) for n, tn in t.items())
+        return HBAR * v0 * (np.abs(ky) - k0) - warp - 2 * tz * np.cos(kz * D)
+
+    def gradient(kx, ky, kz):
+        gx = sum(2 * tn * n * a * np.sin(n * kx * a) for n, tn in t.items())
+        return gx, HBAR * v0 * np.sign(ky), 2 * tz * D * np.sin(kz * D) + 0 * kx
+
+    sheets, period = gen.open_sheets_from_dispersion(N, energy=energy, gradient=gradient, period=(2 * np.pi / a, 0.0),
+                                                     across=(-2 * k0, 2 * k0), tau=TAU, n_kz=6, layer_spacing=D)
+    x = np.array([0.0, 0.01, 0.1, 0.3, 1.0, 3.0, 10.0])
+    per_tesla = E * v0 * a * TAU / HBAR  # ωτ per T
+    fields = np.concatenate([x, -x[1:]]) / per_tesla
+    x = np.concatenate([x, x[1:]])
+    xx = 2 * 2 * E**2 * TAU * a / (np.pi * HBAR**3 * v0 * D) * sum(
+        (n * tn) ** 2 / (1 + (n * x) ** 2) for n, tn in t.items())
+    yy = 2 * E**2 * TAU * v0 / (np.pi * HBAR * a * D)
+    zz = 2 * 2 * E**2 * TAU * tz**2 * D / (np.pi * HBAR**3 * v0 * a)
+    for extrapolate, tolerance in [(False, 1e-4), (True, 1e-7)]:
+        s = bz.conductivity(sheets, fields, layer_spacing=D, kz="kz", period=period, extrapolate=extrapolate,
+                            backend=backend)
+        for label, expected, actual in [("xx", xx, s.sigma_xx), ("yy", yy, s.sigma_yy), ("zz", zz, s.sigma_zz)]:
+            assert print_check(f"K20 sigma_{label} (extrapolate={extrapolate})", expected, actual) < tolerance
+    assert max(np.ptp(s.sigma_yy) / yy, np.ptp(s.sigma_zz) / zz) <= 1e-12
+    off = s[["sigma_xy", "sigma_yx", "sigma_xz", "sigma_zx", "sigma_yz", "sigma_zy"]].to_numpy()
+    print(f"K20: max |off-diagonal| / sqrt(sigma_xx sigma_yy) = {np.max(np.abs(off)) / np.sqrt(xx[0] * yy):.1e}")
+    assert np.max(np.abs(off)) <= 1e-10 * np.sqrt(xx[0] * yy)
+
+
 # ---------------------------------------------------------------------------
 # More invariances (K9, K10)
 # ---------------------------------------------------------------------------
