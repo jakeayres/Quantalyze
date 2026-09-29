@@ -410,6 +410,8 @@ def conductivity(
     if scattering_kernel is not None:
         if backend not in _BACKENDS:
             raise ValueError(f"backend must be one of {_BACKENDS}, not {backend!r}")
+        if fields.ndim != 1:
+            raise ValueError(f"field must be a float or 1-D, not of shape {fields.shape}")
         if not np.all(np.isfinite(fields)):
             raise ValueError("field must be finite")
         inputs, _ = _contour_inputs(frames, periods, layer_spacing, (kx, ky, vx, vy), tau, kz, vz)
