@@ -47,7 +47,7 @@ Two runs logged at different temperatures can't be subtracted row by row until t
 
 ### Smoother curves between sparse points: `method`
 
-`method` is passed to [`scipy.interpolate.interp1d(kind=...)`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.interpolate.interp1d.html). The default, `"linear"`, joins points with straight lines. `"cubic"` follows a smoothly curving function much better when the points are sparse. Other options are `"nearest"` and `"quadratic"`.
+The default, `"linear"`, joins points with straight lines. `"cubic"` follows a smoothly curving function much better when the points are sparse. Other options are `"quadratic"`, `"nearest"`, `"previous"`, `"next"`, and the rest of [`scipy.interpolate.interp1d`'s `kind`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.interpolate.interp1d.html) options.
 
 ```python
 --8<-- "core/interpolation/interpolate_method.py:example"
@@ -60,13 +60,11 @@ Two runs logged at different temperatures can't be subtracted row by row until t
 ![A sparse calibration table interpolated linearly and with cubic splines, compared with the true curve](../examples/core/interpolation/interpolate_method.png#only-light)
 ![A sparse calibration table interpolated linearly and with cubic splines, compared with the true curve](../examples/core/interpolation/interpolate_method-dark.png#only-dark)
 
-For noisy data, stay with `"linear"`: a cubic passes exactly through every point, noise included, and can overshoot between them.
+A cubic passes exactly through every point and can overshoot between them, so it rings either side of a sharp step such as a phase transition. `"pchip"` and `"akima"` are smooth too, but never overshoot the data. For noisy data, stay with `"linear"`: every smooth method passes through every point, noise included.
 
 ### Outside the data range: extrapolation
 
-!!! danger "`interpolate` extrapolates without warning"
-
-    New x values outside the measured range are **not** set to NaN. The curve is extended from the nearest points, which can be wildly wrong.
+New x values outside the measured range come back as **NaN**, because there is nothing to interpolate between. `extrapolate=True` extends the curve from the nearest points instead:
 
 ```python
 --8<-- "core/interpolation/interpolate_extrapolation.py:example"
@@ -76,11 +74,13 @@ For noisy data, stay with `"linear"`: a cubic passes exactly through every point
 --8<-- "core/interpolation/interpolate_extrapolation.txt"
 ```
 
-The resistance at 400 K comes out as 13.5 Ω, extended from the last two noisy points, when the true value is about 2.1 Ω. Keep `onto` inside the measured range, as in the last three lines.
+The extrapolated resistance at 400 K is 13.5 Ω, extended from the last two noisy points, when the true value is about 2.1 Ω. Only extrapolate a short way, and only data you trust to keep the same shape.
 
 !!! warning "Watch out"
 
-    - **Every column is interpolated,** so every column other than the x column must be numeric. Drop text or timestamp columns first, e.g. `df[["temperature", "resistance"]]`.
+    - **Every column is interpolated,** so every column must be numeric. Drop text or timestamp columns first, e.g. `df[["temperature", "resistance"]]`.
+    - **NaNs are skipped column by column.** Each column uses only its own non-NaN rows, so its measured range (and where NaN comes back) can be narrower than the x column's.
+    - **Rows with the same x value are averaged** before interpolating, so repeated readings are fine. A file that sweeps up *and* back down is not: both sweeps are merged into one curve. Split it, or [`bin`](smoothing.md#bin) it, first.
     - **The result has a new 0, 1, 2, … index,** not the index of your input.
 
 ## API reference

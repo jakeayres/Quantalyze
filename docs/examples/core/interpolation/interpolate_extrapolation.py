@@ -1,17 +1,13 @@
 from _data import cooldown
 
 # --8<-- [start:example]
-import numpy as np
 import quantalyze as qz
 
 print(cooldown["temperature"].min(), cooldown["temperature"].max())  # the measured range
 
-# Asking for 0 K and 400 K silently extends a straight line from the nearest points:
-print(qz.interpolate(cooldown, "temperature", onto=[0, 400]))
+# 0 K and 400 K are outside the measured range, so they come back as NaN:
+print(qz.interpolate(cooldown, "temperature", onto=[0, 150, 400]))
 
-# To avoid that, keep the new x values inside the measured range:
-grid = np.arange(0, 400, 10)
-inside = grid[(grid >= cooldown["temperature"].min()) & (grid <= cooldown["temperature"].max())]
-safe = qz.interpolate(cooldown, "temperature", onto=inside)
-print(safe["temperature"].min(), safe["temperature"].max())
+# extrapolate=True extends a straight line from the nearest points instead:
+print(qz.interpolate(cooldown, "temperature", onto=[0, 150, 400], extrapolate=True))
 # --8<-- [end:example]
