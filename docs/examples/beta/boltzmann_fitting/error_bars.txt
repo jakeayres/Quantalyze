@@ -1,0 +1,8 @@
+                 with errors without errors
+mean pull gamma0       +0.02          +0.06
+mean pull gamma1       +0.01          -0.07
+std pull gamma0         0.98           1.02
+std pull gamma1         0.98           1.06
+1σ coverage              68%            68%
+
+mean χ² = 60.5 for ν = 60 (expected 60 ± 0.8)

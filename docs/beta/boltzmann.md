@@ -26,6 +26,9 @@ from quantalyze.beta import boltzmann as bz
 Everything is in SI units: k in m⁻¹, v in m/s, τ in s, B in T. `bz.units` converts from
 Å⁻¹, eV and eV·Å.
 
+To go the other way, fitting a scattering rate or a Fermi surface to measured ρ_xx(B) and
+Hall data, see [Boltzmann fitting](boltzmann_fitting/index.md).
+
 ??? example "Example data used on this page"
 
     The examples below use these contours: `circle` is a circular electron pocket (a

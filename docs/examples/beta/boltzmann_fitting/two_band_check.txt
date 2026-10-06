@@ -1,0 +1,6 @@
+            closed form           |bzf − closed form| / σ   bzf σ / closed-form σ
+                                   N=512    extrapolated
+k_e      5.9997e+09 ± 1.6e+06   0.071    0.0000         1.0000
+k_h      8.0006e+09 ± 1.6e+06   0.096    0.0000         1.0000
+gamma_e  2.0003e+12 ± 2.1e+09   0.006    0.0000         1.0000
+gamma_h  3.0008e+12 ± 2.3e+09   0.008    0.0000         1.0000

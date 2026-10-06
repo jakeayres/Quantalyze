@@ -1,0 +1,3 @@
+τ ranges from 111 fs (along the axes) to 333 fs (along the diagonals)
+95% band half-width: 0.15% at most
+truth inside the 95% band at every angle: True

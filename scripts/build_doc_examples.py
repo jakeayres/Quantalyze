@@ -8,6 +8,8 @@ and once with a dark Matplotlib style, and its results are written next to it:
 - `<name>.txt`: everything the example prints
 - `<name>.png` and `<name>-dark.png`: the figure it leaves open, if any
 
+An example containing the line `# docs: slow` takes long to run; the tests mark it slow.
+
 The docs pages include the example code, the .txt and the figures, so re-run this
 after changing an example or the code it uses:
 
@@ -69,8 +71,22 @@ def example_files(pattern=""):
     )
 
 
+SLOW = "# docs: slow"
+
+
+def is_slow(path):
+    """Whether an example is marked `# docs: slow`."""
+    return any(line.strip() == SLOW for line in Path(path).read_text(encoding="utf-8").splitlines())
+
+
 def run_example(path):
     """Run one example and return (printed output, open figures)."""
+    _, output, figures = run_example_namespace(path)
+    return output, figures
+
+
+def run_example_namespace(path):
+    """Run one example and return (its global variables, printed output, open figures)."""
     path = Path(path)
     # Each docs folder has its own `_data.py`; forget the one imported by the last example.
     for name, module in list(sys.modules.items()):
@@ -81,10 +97,10 @@ def run_example(path):
     sys.path.insert(0, str(path.parent))
     try:
         with contextlib.redirect_stdout(stdout):
-            runpy.run_path(str(path), run_name="__main__")
+            namespace = runpy.run_path(str(path), run_name="__main__")
     finally:
         sys.path.remove(str(path.parent))
-    return stdout.getvalue(), [plt.figure(number) for number in plt.get_fignums()]
+    return namespace, stdout.getvalue(), [plt.figure(number) for number in plt.get_fignums()]
 
 
 def build(path):

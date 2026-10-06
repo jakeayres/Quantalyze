@@ -1,0 +1,2 @@
+right model: χ²/ν = 1.1
+wrong model: χ²/ν = 7.7

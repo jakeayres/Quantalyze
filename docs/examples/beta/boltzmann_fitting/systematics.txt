@@ -1,0 +1,6 @@
+                           χ²/ν   Γ0/true  Γ1/true  μ − true
+correct                      1.1   1.000    1.000    
+thickness +10%             378.1   1.125    1.105    
+thickness +10%, μ fitted    12.3   1.015    1.342    +39.2 meV
+Fermi velocity +10%          1.1   1.100    1.100    
+isotropic rate            6713.3   1.937      —      

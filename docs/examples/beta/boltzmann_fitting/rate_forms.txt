@@ -1,0 +1,5 @@
+isotropic       χ²/ν =   6713.3   gamma0 = 5.81e+12
+harmonics       χ²/ν =      1.1   gamma0 = 6e+12, a4 = 0.5
+anisotropic     χ²/ν =      1.1   gamma0 = 3e+12, gamma1 = 6e+12
+hot_spots       χ²/ν =      7.7   gamma0 = 2.8e+12, height = 6.61e+12
+mean_free_path  χ²/ν =  11323.4   ell = 5.08e-08

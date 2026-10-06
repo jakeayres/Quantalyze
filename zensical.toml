@@ -22,6 +22,22 @@ nav = [
     { "Plotting" = "beta/plotting.md" },
     { "Thermometry" = "beta/thermometry.md" },
     { "Boltzmann" = "beta/boltzmann.md" },
+    { "Boltzmann fitting" = [
+      { "Overview" = "beta/boltzmann_fitting/index.md" },
+      { "Guide" = [
+        { "Preparing your data" = "beta/boltzmann_fitting/prepare.md" },
+        { "Surfaces and rate models" = "beta/boltzmann_fitting/models.md" },
+        { "Fitting the Fermi surface" = "beta/boltzmann_fitting/fermi_surface.md" },
+        { "Reading a result" = "beta/boltzmann_fitting/results.md" },
+      ] },
+      { "Correctness" = [
+        { "Recovering known answers" = "beta/boltzmann_fitting/recovery.md" },
+        { "Honest error bars" = "beta/boltzmann_fitting/error_bars.md" },
+        { "Discretisation" = "beta/boltzmann_fitting/discretisation.md" },
+        { "What the data can't tell you" = "beta/boltzmann_fitting/limits.md" },
+      ] },
+      { "API reference" = "beta/boltzmann_fitting/api.md" },
+    ] },
   ] },
 ]
 

@@ -13,9 +13,10 @@ spec.loader.exec_module(builder)
 STALE = "{} is out of date; run `uv run python scripts/build_doc_examples.py` and commit the result."
 
 
-@pytest.mark.parametrize(
-    "path", builder.example_files(), ids=lambda path: path.relative_to(builder.EXAMPLES).as_posix()
-)
+@pytest.mark.parametrize("path", [
+    pytest.param(path, marks=pytest.mark.slow) if builder.is_slow(path) else path
+    for path in builder.example_files()
+], ids=lambda path: path.relative_to(builder.EXAMPLES).as_posix())
 def test_example(path):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")  # some examples deliberately show a failing fit

@@ -1,0 +1,9 @@
+          value    error  fitted
+gamma0 3.01e+12 9.84e+09    True
+gamma1 5.93e+12 8.72e+10    True
+gamma2 6.82e+10 9.06e+10    True
+
+χ²/ν = 1.11
+singular values: [1.     0.1468 0.007 ]
+warning: gamma1 and gamma2 are 99.82% correlated: the data hardly determine them
+separately, and their errors are unreliable. Try several starting points, or fix one

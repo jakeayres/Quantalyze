@@ -1,0 +1,10 @@
+stage 1, surface held: χ²/ν = 145
+stage 2, surface fitted: χ²/ν = 1.12
+
+          transport alone     with the prior on t′
+mu        -119.98 ± 1.15    -119.99 ± 1.00   meV
+t_prime    -49.98 ± 0.28     -49.99 ± 0.25   meV
+gamma0       3.00 ± 0.01       3.00 ± 0.01   10¹² s⁻¹
+gamma1       6.00 ± 0.02       6.00 ± 0.02   10¹² s⁻¹
+
+σ(t′) with the prior: 0.247 meV; 1/√(1/σ_data² + 1/σ_prior²) = 0.247 meV
