@@ -24,7 +24,6 @@ Examples:
 # whose names start with an underscore are private; anything public in them is
 # re-exported here.
 from . import generators, scattering, units
-from ._legacy import FermiSurface
 from ._response import (
     carrier_density,
     conductivity,
@@ -47,7 +46,6 @@ __all__ = [
     "out_scattering_rate",
     "mean_free_path",
     "conductivity_tensor",
-    "FermiSurface",
     "generators",
     "scattering",
     "units",

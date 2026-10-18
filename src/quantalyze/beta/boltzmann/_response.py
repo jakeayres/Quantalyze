@@ -16,6 +16,7 @@ extrapolation (4σ_N − σ_{N/2})/3, which cancels the O(N⁻²) discretisation
 """
 from __future__ import annotations
 
+import functools
 import warnings
 from typing import Callable, List, Optional, Sequence, Union
 
@@ -530,18 +531,61 @@ def magnetoresistance(sigma: pd.DataFrame, component: str = "xx") -> pd.Series:
     return pd.Series((values - reference) / reference, index=sigma.index, name="magnetoresistance")
 
 
+_POSITIONAL_COLUMNS = ("kx", "ky", "vx", "vy")
+
+
+def _positional_columns_deprecated(function):
+    """Keep `carrier_density(df, kx, ky, vx, vy, ...)` working, with a DeprecationWarning.
+
+    The column names used to be positional; they are now keyword-only, as in every other
+    function here. The decorated function's own signature is the documented one.
+    """
+    @functools.wraps(function)
+    def wrapper(df, *columns, **kwargs):
+        if columns:
+            name = function.__name__
+            if len(columns) > len(_POSITIONAL_COLUMNS):
+                raise TypeError(f"{name}() takes at most {1 + len(_POSITIONAL_COLUMNS)} positional arguments "
+                                f"({1 + len(columns)} given)")
+            given = _POSITIONAL_COLUMNS[:len(columns)]
+            for column in given:
+                if column in kwargs:
+                    raise TypeError(f"{name}() got multiple values for argument {column!r}")
+            warnings.warn(
+                f"passing {', '.join(given)} to {name} positionally is deprecated; pass the column names by "
+                f"keyword, e.g. {name}(df, kx='k_x', layer_spacing=d)",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            kwargs.update(zip(given, columns))
+        return function(df, **kwargs)
+
+    return wrapper
+
+
+def _pocket_density(frame, *, layer_spacing, kx, ky, vx, vy, kz, spin_degeneracy) -> float:
+    """n = g_s A/(4π²d) of one closed pocket, A averaged over its k_z slices (m⁻³)."""
+    slices = [frame] if kz is None else _kz_slices(frame, kz, layer_spacing)
+    areas = []
+    for part in slices:
+        contour = prepare_contour(part[kx], part[ky], part[vx], part[vy], 1.0)  # validates; τ plays no part
+        areas.append(enclosed_area(contour.kx, contour.ky, contour.vx, contour.vy))
+    return spin_degeneracy * float(np.mean(areas)) / (4 * np.pi**2 * layer_spacing)
+
+
+@_positional_columns_deprecated
 def carrier_density(
-    df: pd.DataFrame,
+    df: Union[pd.DataFrame, List[pd.DataFrame]],
+    *,
+    layer_spacing: float,
     kx: str = "kx",
     ky: str = "ky",
     vx: str = "vx",
     vy: str = "vy",
-    *,
-    layer_spacing: float,
-    spin_degeneracy: float = 2,
     kz: Optional[str] = None,
-) -> float:
-    """Carrier density of one closed pocket from the k-space area it encloses (m⁻³).
+    spin_degeneracy: float = 2,
+) -> Union[float, List[float]]:
+    """Carrier density of a closed pocket from the k-space area it encloses (m⁻³).
 
     n = g_s A / (4π² d): the Luttinger count per layer divided by the layer spacing, or
     for a k_z-warped pocket (`kz` given) its average over the k_z slices, which is the
@@ -549,33 +593,55 @@ def carrier_density(
     The area uses the velocities for the contour's curvature, so it is accurate to
     O(N⁻⁴) even for irregular sampling.
 
+    A list of pockets gives one density per pocket, not their sum: n is positive for
+    electron and hole pockets alike, so how to combine them (n_h − n_e for the
+    high-field Hall coefficient of a two-band metal, n_h + n_e for the total) is yours
+    to choose.
+
     Args:
-        df: One contour DataFrame (nodes in order around the pocket).
+        df: One contour DataFrame (nodes in order around the pocket), or a list of
+            them, one per pocket.
+        layer_spacing: Interlayer spacing d (m).
         kx: Column of wavevectors k_x (m⁻¹).
         ky: Column of wavevectors k_y (m⁻¹).
         vx: Column of group velocities v_x (m/s).
         vy: Column of group velocities v_y (m/s).
-        layer_spacing: Interlayer spacing d (m).
-        spin_degeneracy: Spin degeneracy g_s.
         kz: Column of wavevectors k_z (m⁻¹), for a k_z-warped pocket given as slices.
+        spin_degeneracy: Spin degeneracy g_s. Defaults to 2.
 
     Returns:
-        The carrier density n (m⁻³), positive.
+        The carrier density n (m⁻³), positive; for a list of DataFrames, a list with one
+        n per pocket, in the same order.
+
+    Raises:
+        TypeError: If `df` is not a DataFrame or a list of DataFrames.
+        ValueError: If `df` is an empty list, or a contour is not a valid closed pocket
+            (see `conductivity`).
+
+    Warns:
+        DeprecationWarning: If the column names are passed positionally after `df`, as
+            in `carrier_density(df, "k_x", "k_y", "v_x", "v_y", layer_spacing=d)`, which
+            earlier versions allowed. Pass them by keyword.
 
     Examples:
         >>> from quantalyze.beta import boltzmann as bz
         >>> from quantalyze.core.constants import ELECTRON_MASS
         >>> df = bz.generators.circle(512, k_fermi=7e9, mass=ELECTRON_MASS, tau=1e-13)
         >>> n = bz.carrier_density(df, layer_spacing=1e-9)  # g_s k_F² / (4π d)
+        >>> holes = bz.generators.circle(512, k_fermi=5e9, mass=ELECTRON_MASS, tau=1e-13, carrier="hole")
+        >>> n_e, n_h = bz.carrier_density([df, holes], layer_spacing=1e-9)
     """
-    if not isinstance(df, pd.DataFrame):
-        raise TypeError("carrier_density takes one contour DataFrame; call it once per pocket")
-    slices = [df] if kz is None else _kz_slices(df, kz, layer_spacing)
-    areas = []
-    for part in slices:
-        contour = prepare_contour(part[kx], part[ky], part[vx], part[vy], 1.0)  # validates; τ plays no part
-        areas.append(enclosed_area(contour.kx, contour.ky, contour.vx, contour.vy))
-    return spin_degeneracy * float(np.mean(areas)) / (4 * np.pi**2 * layer_spacing)
+    options = dict(layer_spacing=layer_spacing, kx=kx, ky=ky, vx=vx, vy=vy, kz=kz, spin_degeneracy=spin_degeneracy)
+    if isinstance(df, pd.DataFrame):
+        return _pocket_density(df, **options)
+    if not isinstance(df, (list, tuple)):
+        raise TypeError(f"df must be a contour DataFrame or a list of them, not {type(df).__name__}")
+    for number, frame in enumerate(df):
+        if not isinstance(frame, pd.DataFrame):
+            raise TypeError(f"df[{number}] must be a contour DataFrame, not {type(frame).__name__}")
+    if not df:
+        raise ValueError("df must contain at least one contour")
+    return [_pocket_density(frame, **options) for frame in df]
 
 
 def density_of_states(

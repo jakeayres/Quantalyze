@@ -2,12 +2,9 @@
 
 Checks that the test contours are what they claim to be (velocities are ∇ε/ħ,
 nodes lie on ε = 0, enclosed areas are right), that the scattering models,
-unit converters and analytic helpers are correct, and that FermiSurface still
-produces exactly what it did before the module became a package.
+unit converters and analytic helpers are correct, and that the package exposes
+its public namespaces.
 """
-import json
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -542,36 +539,14 @@ def test_two_band_uncompensated_limits():
 
 
 # ---------------------------------------------------------------------------
-# Package layout and the legacy FermiSurface
+# Package layout
 # ---------------------------------------------------------------------------
-
-SNAPSHOT = Path(__file__).parent / "data" / "boltzmann_legacy_snapshot.json"
 
 
 def test_package_layout():
-    from quantalyze.beta.boltzmann import FermiSurface
-    from quantalyze.beta.boltzmann._legacy import FermiSurface as LegacyFermiSurface
-
-    assert FermiSurface is LegacyFermiSurface
-    assert bz.FermiSurface is FermiSurface
     for module in ("generators", "scattering", "units"):
         assert hasattr(bz, module)
-
-
-@pytest.mark.parametrize("case", ["circle", "fourfold"])
-def test_fermi_surface_geometry_unchanged(case):
-    """FermiSurface's area and density match the pre-package boltzmann.py. (Its conductivity
-    changed on purpose when it moved to the exact solver: see the legacy tests.)"""
-    data = json.loads(SNAPSHOT.read_text())["cases"][case]
-    fs = bz.FermiSurface(
-        np.array(data["theta"]),
-        np.array(data["fermi_wavevector"]),
-        np.array(data["effective_mass"]),
-        np.array(data["relaxation_time"]),
-        data["c_axis_length"],
-    )
-    assert fs.fermi_area() == pytest.approx(data["fermi_area"], rel=1e-14)
-    assert fs.carrier_density() == pytest.approx(data["carrier_density"], rel=1e-14)
+    assert not hasattr(bz, "FermiSurface")  # removed: build a contour DataFrame instead
 
 
 def test_slow_marker_is_registered(pytestconfig):

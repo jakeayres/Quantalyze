@@ -20,7 +20,7 @@ from quantalyze.beta import boltzmann as bz
 | [`bz.resistivity`](#resistivity) | ρ = σ⁻¹ | a `DataFrame` of ρ_xx, ρ_xy, ρ_yx, ρ_yy |
 | [`bz.hall_coefficient`](#hall_coefficient) | R_H = ½(ρ_yx − ρ_xy)/B | a `Series` (m³/C) |
 | [`bz.magnetoresistance`](#magnetoresistance) | (ρ_xx(B) − ρ_xx(0))/ρ_xx(0) | a `Series` |
-| [`bz.carrier_density`](#carrier_density) | n from the area a pocket encloses | a float (m⁻³) |
+| [`bz.carrier_density`](#carrier_density) | n from the area a pocket encloses | a float (m⁻³), or one per pocket |
 | [`bz.generators`](#generators) | Build contours from your own band, or test shapes | `DataFrame`s |
 
 Everything is in SI units: k in m⁻¹, v in m/s, τ in s, B in T. `bz.units` converts from
@@ -327,7 +327,9 @@ R_H is NaN at B = 0, where it is undefined.
 
 **n = g_s A/(4π²d) from the area A the pocket encloses.** The area follows the curve
 between points using the velocities (which fix the tangent direction), so it is
-accurate to about 10⁻¹⁰ with 512 points even when they are unevenly spaced.
+accurate to about 10⁻¹⁰ with 512 points even when they are unevenly spaced. A list of
+pockets gives one n per pocket, in order. They are not summed: n is positive for
+electron and hole pockets alike, so you choose the combination (n_h − n_e or n_h + n_e).
 
 ```python
 --8<-- "beta/boltzmann/own_band.py:example"
@@ -389,27 +391,6 @@ five columns, converting units with `bz.units` first.
     - **`from_dispersion` needs a star-shaped pocket:** every ray from `center` must cross
       the Fermi surface exactly once within `max_radius`. It raises an error otherwise.
     - **`energy` is measured from the Fermi level,** and must accept NumPy arrays.
-
-## `FermiSurface` { #fermisurface }
-
-**The original interface, now running on the same solver.** Give it k_F(θ), m*(θ) and
-τ(θ) on a grid of angles; its velocities are ħk_F/m* along the normal.
-
-```python
---8<-- "beta/boltzmann/fermi_surface_class.py:example"
-```
-
-```text title="Output"
---8<-- "beta/boltzmann/fermi_surface_class.txt"
-```
-
-!!! note "Changed"
-
-    `FermiSurface.calculate_conductivity` now returns the exact result, so its numbers
-    differ from earlier versions. Those kept only one orbit of history, which is wrong
-    once ω_cτ ≳ 1 (σ_xx of a circle was 33% too low at ω_cτ = 5). The options
-    `start_phi`, `end_phi`, `phi_points` and `exponent_points` are accepted but no
-    longer do anything.
 
 ## API reference
 
@@ -479,9 +460,3 @@ five columns, converting units with `bz.units` first.
         options:
           heading_level: 3
           show_root_heading: false
-
-??? info "`bz.FermiSurface`"
-
-    ::: quantalyze.beta.boltzmann.FermiSurface
-        options:
-          heading_level: 3

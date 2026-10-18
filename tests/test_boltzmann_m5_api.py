@@ -6,6 +6,9 @@ interface: DataFrame and list input, column names, τ as a float, required
 arguments, field signs and ordering, and the enclosed-area accuracy behind
 carrier_density.
 """
+import inspect
+import warnings
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -37,7 +40,7 @@ def fourfold(n=512):
 
 def test_public_names():
     for name in ("conductivity", "resistivity", "hall_coefficient", "magnetoresistance", "carrier_density",
-                 "conductivity_tensor", "FermiSurface", "generators", "scattering", "units"):
+                 "conductivity_tensor", "generators", "scattering", "units"):
         assert name in bz.__all__ and hasattr(bz, name)
 
 
@@ -72,7 +75,7 @@ def test_custom_column_names():
     expected = bz.conductivity(df, FIELDS, layer_spacing=D)
     actual = bz.conductivity(renamed, FIELDS, layer_spacing=D, kx="k_x", ky="k_y", vx="v_x", vy="v_y", tau="lifetime")
     pd.testing.assert_frame_equal(actual, expected)
-    assert bz.carrier_density(renamed, "k_x", "k_y", "v_x", "v_y", layer_spacing=D) == pytest.approx(
+    assert bz.carrier_density(renamed, kx="k_x", ky="k_y", vx="v_x", vy="v_y", layer_spacing=D) == pytest.approx(
         bz.carrier_density(df, layer_spacing=D), rel=1e-15)
 
 
@@ -146,8 +149,52 @@ def test_carrier_density():
     assert n == pytest.approx(expected, rel=1e-9)
     assert bz.carrier_density(circle(), layer_spacing=D, spin_degeneracy=1) == pytest.approx(n / 2, rel=1e-15)
     assert bz.carrier_density(circle(carrier="hole"), layer_spacing=D) == pytest.approx(n, rel=1e-15)
-    with pytest.raises(TypeError):
-        bz.carrier_density([circle()], layer_spacing=D)
+
+
+def test_carrier_density_of_a_list_is_one_density_per_pocket():
+    """A list gives n for each pocket, in order, not their sum: a circle gives g_s k_F²/(4πd)
+    whether it is an electron or a hole pocket."""
+    pockets = [circle(), fourfold(), circle(carrier="hole")]
+    copies = [pocket.copy() for pocket in pockets]
+    densities = bz.carrier_density(pockets, layer_spacing=D)
+    assert isinstance(densities, list)
+    assert densities == [bz.carrier_density(pocket, layer_spacing=D) for pocket in pockets]
+    assert densities[0] == pytest.approx(2 * K_F**2 / (4 * np.pi * D), rel=1e-9)
+    assert densities[2] == pytest.approx(densities[0], rel=1e-15)
+    assert bz.carrier_density(tuple(pockets), layer_spacing=D) == densities
+    assert bz.carrier_density([circle()], layer_spacing=D) == [densities[0]]
+    for pocket, copy in zip(pockets, copies):
+        pd.testing.assert_frame_equal(pocket, copy)
+
+
+def test_carrier_density_rejects_what_is_not_a_contour():
+    with pytest.raises(ValueError, match="at least one contour"):
+        bz.carrier_density([], layer_spacing=D)
+    with pytest.raises(TypeError, match="df must be"):
+        bz.carrier_density(circle().to_numpy(), layer_spacing=D)
+    with pytest.raises(TypeError, match=r"df\[1\]"):
+        bz.carrier_density([circle(), "kx"], layer_spacing=D)
+
+
+def test_carrier_density_column_names_are_keyword_only_but_positional_still_works():
+    """The column names were once positional, carrier_density(df, kx, ky, vx, vy, ...). That
+    still gives exactly the keyword result, with a DeprecationWarning."""
+    parameters = inspect.signature(bz.carrier_density).parameters
+    assert all(parameters[name].kind is inspect.Parameter.KEYWORD_ONLY for name in ("kx", "ky", "vx", "vy"))
+    df = fourfold()
+    renamed = df.rename(columns={"kx": "k_x", "ky": "k_y", "vx": "v_x", "vy": "v_y"})
+    expected = bz.carrier_density(renamed, kx="k_x", ky="k_y", vx="v_x", vy="v_y", layer_spacing=D)
+    with pytest.warns(DeprecationWarning, match="by keyword"):
+        assert bz.carrier_density(renamed, "k_x", "k_y", "v_x", "v_y", layer_spacing=D) == expected
+    with pytest.warns(DeprecationWarning):
+        assert bz.carrier_density(renamed, "k_x", "k_y", vx="v_x", vy="v_y", layer_spacing=D) == expected
+    with pytest.raises(TypeError, match="multiple values for argument 'kx'"):
+        bz.carrier_density(df, "kx", kx="kx", layer_spacing=D)
+    with pytest.raises(TypeError, match="positional arguments"):
+        bz.carrier_density(df, "kx", "ky", "vx", "vy", "tau", layer_spacing=D)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert bz.carrier_density(df=renamed, kx="k_x", ky="k_y", vx="v_x", vy="v_y", layer_spacing=D) == expected
 
 
 def lopsided_nodes(phi):
