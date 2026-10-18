@@ -17,7 +17,7 @@ from typing import Optional, Sequence
 
 import numpy as np
 
-from ...core.constants import ELEMENTARY_CHARGE, HBAR
+from ...core.constants import ELEMENTARY_CHARGE, HBAR, SPEED_OF_LIGHT
 
 MIN_NODES = 16
 
@@ -33,6 +33,12 @@ _NORMAL_TOLERANCE = 0.1
 # (about 1.5×). A hot spot that narrow is under-resolved: at N = 256 a jump of 0.35 costs
 # about 2% in the magnetoresistance, 0.7 about 7% and 1.3 about 25%.
 _TAU_JUMP = 0.4
+# Very loose bounds that catch values in the wrong units, and nothing else: a typical speed
+# |v| below this (unit vectors have |v| = 1 m/s) or above the speed of light...
+_SLOWEST = 10.0  # m/s
+# ...and a contour smaller than this across (k in Å⁻¹ or nm⁻¹ is ~1), or reaching beyond this.
+_SMALLEST_K = 1e5  # m⁻¹
+_LARGEST_K = 1e13  # m⁻¹
 
 
 @dataclass(frozen=True)
@@ -258,6 +264,37 @@ def contour_geometry(kx, ky, vx, vy, *, charge: float = -ELEMENTARY_CHARGE,
             f"{against[:5].tolist()} run against the motion set by the velocities"
         )
 
+    # Along a closed contour the velocity turns round once. More turns mean several contours
+    # given as one: k_z slices without kz=, or pockets in one DataFrame instead of a list.
+    if wrap is None:
+        angle = np.arctan2(vy, vx)
+        step = np.mod(_following(angle) - angle + np.pi, 2 * np.pi) - np.pi  # each turn, in [−π, π)
+        turns = abs(int(np.rint(np.sum(step) / (2 * np.pi))))
+        if turns > 1:
+            raise ValueError(
+                f"the contour goes round {turns} times (its velocity turns through {turns} × 360°, where one closed "
+                "contour turns once): it holds several contours. Pass k_z slices with kz=..., and several pockets as "
+                "a list of DataFrames"
+            )
+
+    # Very loose plausibility checks on the units of v and k.
+    typical = float(np.median(speed))
+    if not _SLOWEST <= typical <= SPEED_OF_LIGHT:
+        warnings.warn(
+            f"the typical speed |v| is {typical:.3g} m/s, which no group velocity has: v must be ∇ε/ħ in m/s "
+            "(unit vectors have |v| = 1)",
+            UserWarning,
+            stacklevel=3,
+        )
+    reach = max(float(np.max(np.abs(kx))), float(np.max(np.abs(ky))))
+    if size < _SMALLEST_K or reach > _LARGEST_K:
+        warnings.warn(
+            f"the contour is {size:.3g} m⁻¹ across and reaches |k| = {reach:.3g} m⁻¹: k must be in m⁻¹ "
+            "(bz.units.per_angstrom_to_per_meter converts from Å⁻¹)",
+            UserWarning,
+            stacklevel=3,
+        )
+
     # Velocities should be normal to the contour: compare each segment with the mean of
     # the unit velocities at its ends.
     ux, uy = vx / speed, vy / speed
@@ -436,16 +473,19 @@ def prepare_contour(
         ValueError: If the arrays are not 1-D or differ in length; if any value is
             NaN or infinite; if τ ≤ 0 or v = 0 at a node; if there are fewer than 16
             distinct nodes; if two consecutive nodes coincide; if a closed contour does
-            not close, or `period` does not join the last node to the first; if the
-            nodes are not ordered along the contour; if |q| ≠ e; or if
-            `remove_drift=True` is combined with `period`.
+            not close, goes round more than once (several contours given as one), or
+            `period` does not join the last node to the first; if the nodes are not
+            ordered along the contour; if |q| ≠ e; or if `remove_drift=True` is combined
+            with `period`.
 
     Warns:
         UserWarning: If the velocities are not normal to the contour: a sign of
             unit-vector velocities, swapped components or mixed units, or of a contour
             sampled too coarsely where it curves sharply. Also if τ changes by more than
             about 1.5× between neighbouring nodes, which leaves a narrow hot spot
-            under-resolved.
+            under-resolved; and if the values are implausible in SI units: a typical |v|
+            below 10 m/s or above the speed of light, or a contour less than 1e5 m⁻¹
+            across or reaching beyond 1e13 m⁻¹.
 
     Examples:
         >>> from quantalyze.beta import boltzmann as bz

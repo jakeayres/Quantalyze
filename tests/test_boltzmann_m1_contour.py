@@ -187,6 +187,40 @@ def test_warns_when_velocity_is_not_normal_to_the_contour():
         prepare_contour(kx, ky, c * vx - s * vy, s * vx + c * vy, tau)
 
 
+def test_rejects_a_contour_that_goes_round_more_than_once():
+    """Several contours given as one (k_z slices without kz=, pockets in one DataFrame): along
+    a closed contour the velocity turns through 360°, here through 720° and 1080°."""
+    kx, ky, vx, vy, tau = arrays(circle())
+    with pytest.raises(ValueError, match="goes round 2 times"):
+        prepare_contour(*(np.concatenate([a, a]) for a in (kx, ky, vx, vy, tau)))
+    slices = [np.concatenate([scale * a for scale in (1.0, 1.01, 1.02)]) for a in (kx, ky)]
+    with pytest.raises(ValueError, match="goes round 3 times"):
+        prepare_contour(*slices, *(np.tile(a, 3) for a in (vx, vy, tau)))
+
+
+def test_warns_when_values_are_implausible_in_si_units():
+    """Very loose bounds that only wrong units cross: |v| of unit vectors (1 m/s) or above the
+    speed of light, and k in Å⁻¹ (a contour ~1 m⁻¹ across) or beyond 10¹³ m⁻¹."""
+    kx, ky, vx, vy, tau = arrays(circle())
+    speed = np.hypot(vx, vy)
+    with pytest.warns(UserWarning, match=r"typical speed \|v\| is 1 m/s"):
+        prepare_contour(kx, ky, vx / speed, vy / speed, tau)
+    with pytest.warns(UserWarning, match="typical speed"):
+        prepare_contour(kx, ky, 1e4 * vx, 1e4 * vy, tau)  # 8 × 10⁹ m/s
+    with pytest.warns(UserWarning, match="k must be in m⁻¹"):
+        prepare_contour(1e-10 * kx, 1e-10 * ky, vx, vy, tau)
+    with pytest.warns(UserWarning, match="k must be in m⁻¹"):
+        prepare_contour(1e4 * kx, 1e4 * ky, vx, vy, tau)
+
+
+def test_plausible_extremes_do_not_warn():
+    """A heavy-fermion-like |v| ~ 10³ m/s and a tiny pocket, k_F = 10⁷ m⁻¹, are well inside the bounds."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        prepare_contour(*arrays(gen.circle(64, k_fermi=K_F, mass=800 * ELECTRON_MASS, tau=TAU)))
+        prepare_contour(*arrays(gen.circle(64, k_fermi=1e7, mass=0.01 * ELECTRON_MASS, tau=TAU)))
+
+
 @pytest.mark.parametrize("df", [
     circle(16), circle(16, carrier="hole"), lopsided(16).assign(tau=TAU), fourfold(16).assign(tau=TAU),
     tight_binding_m(16).assign(tau=TAU),

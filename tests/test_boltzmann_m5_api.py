@@ -141,6 +141,23 @@ def test_period_can_be_given_per_contour():
         bz.conductivity([plus, minus], FIELDS, layer_spacing=D, period=[(0.0, g)])
 
 
+def test_a_kz_column_with_several_values_needs_kz():
+    """Slices stacked in one DataFrame are several orbits: without kz=, every DataFrame-level
+    function refuses them, rather than treating them as one contour going round N times."""
+    df = circle()
+    stacked = pd.concat([df.assign(kz=0.0), df.assign(kx=1.01 * df.kx, ky=1.01 * df.ky, kz=np.pi / D)],
+                        ignore_index=True)
+    for call in (lambda: bz.conductivity(stacked, FIELDS, layer_spacing=D),
+                 lambda: bz.carrier_density(stacked, layer_spacing=D),
+                 lambda: bz.density_of_states(stacked, layer_spacing=D),
+                 lambda: bz.mean_free_path(stacked, layer_spacing=D)):
+        with pytest.raises(ValueError, match="'kz' column with 2 different values.*pass kz='kz'"):
+            call()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        bz.conductivity(df.assign(kz=0.0), FIELDS, layer_spacing=D)  # one k_z value: one contour
+
+
 def test_carrier_density():
     """n = g_s A/(4π²d); for a circle g_s k_F²/(4πd)."""
     n = bz.carrier_density(circle(), layer_spacing=D)

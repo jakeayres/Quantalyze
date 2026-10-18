@@ -125,7 +125,12 @@ extrapolated on its own). `conductivity_tensor` takes the same option.
       scales σ by the same factor.
     - **Velocities are the group velocity ∇ε/ħ in m/s,** not unit vectors and not in
       eV·Å. The solver warns if they are not normal to the contour, which usually means
-      they are in the wrong form (or the contour is too coarsely sampled).
+      they are in the wrong form (or the contour is too coarsely sampled), and if the
+      values are implausible in SI units: a typical |v| below 10 m/s or above the speed of
+      light, or a contour less than 10⁵ m⁻¹ across (k in Å⁻¹, say).
+    - **One DataFrame is one contour.** Pass several pockets as a list, and k_z slices with
+      `kz=`. A closed contour whose nodes go round more than once, or a `kz` column with
+      several values when `kz` is not given, is an error.
     - **Use enough points.** The error falls as N⁻² at every field; N = 512 gives about
       5 × 10⁻⁵ on a simple pocket, and more where τ or the curvature changes quickly
       between neighbouring points. The discretisation adds no magnetoresistance of its

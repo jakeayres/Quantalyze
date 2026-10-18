@@ -244,6 +244,15 @@ def _periods(period, n_frames: int) -> list:
     return items
 
 
+def _check_kz_column(frame: pd.DataFrame, kz: Optional[str]) -> None:
+    """Raise if a contour has a "kz" column with several values but `kz` was not given."""
+    if kz is None and "kz" in frame.columns:
+        count = np.unique(frame["kz"].to_numpy(dtype=np.float64)).size
+        if count > 1:
+            raise ValueError(f"the contour has a 'kz' column with {count} different values, but kz is None: pass "
+                             "kz='kz' to treat them as k_z slices (a contour is one orbit, at one k_z)")
+
+
 def _kz_positions(frame: pd.DataFrame, kz: str, layer_spacing: float) -> list:
     """(k_z, row positions) of each k_z slice, checking the slices evenly cover one period 2π/d."""
     values = np.unique(frame[kz].to_numpy(dtype=np.float64))
@@ -272,6 +281,7 @@ def _contour_inputs(frames, periods, layer_spacing, columns, tau, kz, vz):
     kx, ky, vx, vy = columns
     inputs, rows = [], []
     for number, (frame, frame_period) in enumerate(zip(frames, periods)):
+        _check_kz_column(frame, kz)
         if kz is None:
             parts = [(None, np.arange(len(frame)))]
         else:
@@ -393,6 +403,18 @@ def conductivity(
         with `kz`, the nine components sigma_xx, sigma_xy, sigma_xz, sigma_yx, …, sigma_zz.
         One row per field, in the order given.
 
+    Raises:
+        ValueError: If a contour is invalid: values not finite, τ ≤ 0 or v = 0 at a node,
+            fewer than 16 nodes, nodes out of order or coinciding, a closed contour that
+            does not close or goes round more than once, or a `period` that does not join
+            its ends; if a contour has a "kz" column with several values but `kz` is None;
+            or if the k_z slices are not evenly spaced over one period.
+
+    Warns:
+        UserWarning: If the velocities are not normal to the contour, τ changes too fast
+            between neighbouring nodes, or the typical |v| or the size of the contour in k
+            is implausible in SI units (v in m/s, k in m⁻¹).
+
     Examples:
         >>> import numpy as np
         >>> from quantalyze.beta import boltzmann as bz
@@ -426,6 +448,7 @@ def conductivity(
                    symmetrize=symmetrize, remove_drift=remove_drift, backend=backend, extrapolate=extrapolate)
     total = np.zeros((fields.size, dim, dim))
     for frame, frame_period in zip(frames, periods):
+        _check_kz_column(frame, kz)
         slices = [frame] if kz is None else _kz_slices(frame, kz, layer_spacing)
         for part in slices:
             tau_values = part[tau].to_numpy(dtype=np.float64) if isinstance(tau, str) else float(tau)
@@ -565,6 +588,7 @@ def _positional_columns_deprecated(function):
 
 def _pocket_density(frame, *, layer_spacing, kx, ky, vx, vy, kz, spin_degeneracy) -> float:
     """n = g_s A/(4π²d) of one closed pocket, A averaged over its k_z slices (m⁻³)."""
+    _check_kz_column(frame, kz)
     slices = [frame] if kz is None else _kz_slices(frame, kz, layer_spacing)
     areas = []
     for part in slices:
