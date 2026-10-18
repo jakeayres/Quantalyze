@@ -31,6 +31,7 @@ two checks worth making on every fit: the residuals, and the uncertainty of τ(�
 | `result.summary()` | Value, error and whether fitted, for every parameter |
 | `result.chi_squared`, `degrees_of_freedom`, `reduced_chi_squared` | Goodness of fit: χ²/ν ≈ 1 when the model and the errors are right |
 | `result.absolute` | True if the residuals were weighted by your errors (see below) |
+| `result.fit_quality` | One row per channel: points, the scale its residuals were divided by, its χ² and share of the total, and its misfit (`rms_residual`, `relative_rms`) |
 | `result.singular_values` | How many independent combinations of parameters the data constrain: a value near 0 is one they barely see |
 | `result.starts` | Where each starting point ended up, and its χ² |
 | `result.evaluate(field)` | The fitted model at any fields: a DataFrame like `bzf.transport`'s |

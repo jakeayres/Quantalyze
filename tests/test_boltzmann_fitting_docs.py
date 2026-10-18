@@ -150,6 +150,25 @@ def test_a_prior_adds_information_as_inverse_variances():
     assert within(ns["informed"], {"mu": ns["true_mu"], "t_prime": ns["t_prime"], **ns["true_rate"]})
 
 
+# F7: fitting several datasets (joint.md)
+
+def test_the_joint_example_recovers_the_truth():
+    ns = run("joint_temperatures")
+    assert within(ns["result"], ns["truth"])
+    assert ns["result"].weighting == "curve"
+
+
+def test_a_joint_fit_determines_what_single_temperatures_cannot():
+    ns = run("joint_vs_single")
+    joint, alone = ns["joint"], ns["alone"]
+    message = str(ns["caught"][0].message)
+    assert "gamma_imp and alpha" in message and "correlated" in message
+    assert within(joint, {**ns["true_shared"], **{f"gamma1[{T} K]": v for T, v in ns["true_gamma1"].items()}})
+    for T in ns["temperatures"]:
+        print(f"{T} K: error of gamma1 alone {alone[T].errors['gamma1']:.3g}, joint {joint.errors[f'gamma1[{T} K]']:.3g}")
+        assert joint.errors[f"gamma1[{T} K]"] < alone[T].errors["gamma1"]
+
+
 # F6: reading a result (results.md)
 
 def test_the_tau_band_from_the_covariance_covers_the_truth():

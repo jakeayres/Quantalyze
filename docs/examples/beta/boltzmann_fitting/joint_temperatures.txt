@@ -1,0 +1,21 @@
+                 value     error   truth
+gamma_imp    1.999e+12 2.673e+09   2e+12
+alpha        3.999e+08 7.018e+05   4e+08
+gamma1[10 K] 1.502e+12 4.874e+09 1.5e+12
+gamma1[30 K] 2.502e+12 4.576e+09 2.5e+12
+gamma1[50 K] 3.501e+12 4.376e+09 3.5e+12
+gamma1[70 K] 4.502e+12 5.812e+09 4.5e+12
+gamma1[90 K] 5.508e+12  9.57e+09 5.5e+12
+
+weighting: curve
+  dataset           channel  points    sigma  chi_squared  share  rms_residual  relative_rms
+0    10 K       resistivity      61 2.38e-08      0.00018 0.0821       4.1e-11       0.00172
+1    10 K  hall_resistivity      61 1.85e-08     0.000183 0.0832       3.2e-11       0.00173
+2    30 K       resistivity      61 3.04e-08     0.000208 0.0945       5.6e-11       0.00185
+3    30 K  hall_resistivity      61 1.78e-08     0.000253  0.115      3.62e-11       0.00204
+4    50 K       resistivity      61  3.9e-08     0.000204  0.093      7.14e-11       0.00183
+5    50 K  hall_resistivity      61  1.7e-08     0.000182 0.0828      2.94e-11       0.00173
+6    70 K       resistivity      61 4.97e-08     0.000227  0.103      9.57e-11       0.00193
+7    70 K  hall_resistivity      61 1.63e-08     0.000195 0.0889      2.91e-11       0.00179
+8    90 K       resistivity      61 6.24e-08     0.000271  0.123      1.32e-10       0.00211
+9    90 K  hall_resistivity      61 1.56e-08     0.000295  0.134      3.43e-11        0.0022

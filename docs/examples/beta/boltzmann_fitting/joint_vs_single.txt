@@ -1,0 +1,11 @@
+one temperature: gamma_imp and alpha are 100.00% correlated: the data hardly determine them separately, and their errors are unreliable. Try several starting points, or fix one
+joint: gamma_imp = 1.999e+12 ± 2.7e+09 s⁻¹ (truth 2e+12)
+joint: alpha = 3.999e+08 ± 7e+05 s⁻¹ K⁻² (truth 4e+08)
+
+  T   error of Γ₁ (10¹⁰ s⁻¹)
+      alone  joint
+ 10    0.63   0.49
+ 30    0.74   0.46
+ 50    0.77   0.44
+ 70    0.90   0.58
+ 90    1.27   0.96

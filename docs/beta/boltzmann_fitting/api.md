@@ -11,8 +11,26 @@ from quantalyze.beta import boltzmann_fitting as bzf
 ::: quantalyze.beta.boltzmann_fitting.TransportFit
     options:
       heading_level: 2
+      inherited_members: true
 
 ::: quantalyze.beta.boltzmann_fitting.transport
+    options:
+      heading_level: 2
+
+::: quantalyze.beta.boltzmann_fitting.fit_joint
+    options:
+      heading_level: 2
+
+::: quantalyze.beta.boltzmann_fitting.Dataset
+    options:
+      heading_level: 2
+
+::: quantalyze.beta.boltzmann_fitting.JointFit
+    options:
+      heading_level: 2
+      inherited_members: true
+
+::: quantalyze.beta.boltzmann_fitting.joint_transport
     options:
       heading_level: 2
 

@@ -29,6 +29,7 @@ nav = [
         { "Surfaces and rate models" = "beta/boltzmann_fitting/models.md" },
         { "Fitting the Fermi surface" = "beta/boltzmann_fitting/fermi_surface.md" },
         { "Reading a result" = "beta/boltzmann_fitting/results.md" },
+        { "Fitting several datasets" = "beta/boltzmann_fitting/joint.md" },
       ] },
       { "Correctness" = [
         { "Recovering known answers" = "beta/boltzmann_fitting/recovery.md" },

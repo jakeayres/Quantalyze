@@ -4,7 +4,8 @@ Fit Boltzmann-transport models to measured magnetotransport. From ρ_xx(B) and t
 resistivity ρ_H(B) at one temperature, `boltzmann_fitting` finds the parameters of a
 scattering rate 1/τ(k) on a known Fermi surface, the parameters of the Fermi surface
 itself, or both. The model is computed exactly by [`bz.conductivity`](../boltzmann.md), so
-it holds at every ω_cτ.
+it holds at every ω_cτ. [Several datasets](joint.md), such as one sample at several
+temperatures, can be fitted together, with parameters shared between them or fitted to each.
 
 ```python
 from quantalyze.beta import boltzmann_fitting as bzf
@@ -47,6 +48,8 @@ right.
 | `bzf.transport` | The model at given parameters: ρ_xx(B) and ρ_H(B) | a `DataFrame` |
 | `bzf.build_surface` | The Fermi surface at given parameters, with τ = 1/rate | `DataFrame`s |
 | `bzf.polar_angle` | The polar angle φ of each Fermi-surface point about a centre | a `Series` (rad) |
+| `bzf.fit_joint` | Least-squares fit of several `bzf.Dataset`s at once, with shared and separate parameters | a `JointFit` |
+| `bzf.joint_transport` | The joint model at given parameters, for each dataset | `DataFrame`s |
 
 Full signatures are in the [API reference](api.md).
 
@@ -60,6 +63,9 @@ Full signatures are in the [API reference](api.md).
    stages, priors from other measurements.
 4. **[Reading a result](results.md):** everything in a `TransportFit`, residuals, and the
    uncertainty of τ(φ).
+5. **[Fitting several datasets](joint.md):** shared and separate parameters, laws across
+   datasets such as Γ(T), weighting curves without error bars, and what a joint fit can
+   determine.
 
 ## Why you can trust it
 
